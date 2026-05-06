@@ -1,0 +1,1824 @@
+-- init
+if not game:IsLoaded() then 
+    game.Loaded:Wait()
+end
+
+if not syn or not protectgui then
+    getgenv().protectgui = function() end
+end
+
+local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
+local Library = loadstring(game:HttpGet(repo .. "Library.lua"))()
+local ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))()
+local SaveManager = loadstring(game:HttpGet(repo .. "addons/SaveManager.lua"))()
+
+local Options = Library.Options
+local Toggles = Library.Toggles
+
+local Window = Library:CreateWindow({
+	Title = "Waster ware",
+	Footer = "by @Nexsue @ycleb",
+    Icon = 0,
+	NotifySide = "Right",
+	ShowCustomCursor = true,
+})
+
+local SilentAimSettings = {
+    Enabled = false,
+    
+    TeamCheck = false,
+    VisibleCheck = true, 
+    TargetPart = "HumanoidRootPart",
+    SilentAimMethod = "Raycast",
+    
+    FOVRadius = 130,
+    FOVVisible = false,
+    ShowSilentAimTarget = false, 
+    ShowBulletTracers = true,
+    ShowHitNotifications = true,
+    
+    ESPEnabled = false,
+    SimpleESPEnabled = false,
+    
+    CustomCameraFOV = false,
+    CameraFOVAmount = 100,
+    
+    FlyJumpEnabled = false,
+    
+    ZoomButtonEnabled = false,
+    
+    UwUHitSound = false,
+    CuteOpenSound = true,
+    WeaponSkinEnabled = false,
+    DeathESPEnabled = true,
+    SkyboxEnabled = false,
+    MorningTime = false,
+    AutoHempEnabled = false,
+    
+    CoordFinder = false,
+    MarkerX = 800,
+    MarkerY = 400,
+    
+    Check360Enabled = false,
+    AntiAimEnabled = false,
+    ThirdPersonEnabled = false,
+    ThirdPersonDistance = 15,
+    VflyEnabled = false,
+    VflySpeed = 1,
+    SpiderEnabled = false,
+    SpiderSpeed = 50,
+    
+    HitboxExpander = false,
+    HitboxType = "Head", -- "Head" or "Body"
+    HitboxSize = 2,
+    
+    MouseHitPrediction = false,
+    MouseHitPredictionAmount = 0.165,
+    HitChance = 100
+}
+
+getgenv().SilentAimSettings = SilentAimSettings
+
+local Camera = workspace.CurrentCamera
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local GuiService = game:GetService("GuiService")
+local UserInputService = game:GetService("UserInputService")
+local HttpService = game:GetService("HttpService")
+
+local LocalPlayer = Players.LocalPlayer
+local Mouse = LocalPlayer:GetMouse()
+
+local GetChildren = game.GetChildren
+local GetPlayers = Players.GetPlayers
+local WorldToScreen = Camera.WorldToScreenPoint
+local WorldToViewportPoint = Camera.WorldToViewportPoint
+local GetPartsObscuringTarget = Camera.GetPartsObscuringTarget
+local FindFirstChild = game.FindFirstChild
+local RenderStepped = RunService.RenderStepped
+local GuiInset = GuiService.GetGuiInset
+local GetMouseLocation = UserInputService.GetMouseLocation
+
+local resume = coroutine.resume 
+local create = coroutine.create
+
+local ValidTargetParts = {"Head", "HumanoidRootPart"}
+local PredictionAmount = 0.165
+
+local function CreateTracer(Origin, EndPoint)
+    if not Origin or not EndPoint then return end
+    local Distance = (EndPoint - Origin).Magnitude
+    if Distance < 0.1 then return end
+
+    local Tracer = Instance.new("Part")
+    Tracer.Name = "Tracer"
+    Tracer.Anchored = true
+    Tracer.CanCollide = false
+    pcall(function() Tracer.CanQuery = false end)
+    pcall(function() Tracer.CanTouch = false end)
+    Tracer.Transparency = 0.3
+    Tracer.Material = Enum.Material.Neon
+    Tracer.Color = Color3.fromRGB(170, 0, 255)
+    
+    Tracer.Size = Vector3.new(0.1, 0.1, Distance)
+    Tracer.CFrame = CFrame.lookAt(Origin, EndPoint) * CFrame.new(0, 0, -Distance / 2)
+    
+    pcall(function()
+        Tracer.Parent = workspace.CurrentCamera or workspace.Terrain or workspace
+    end)
+    
+    task.delay(5, function()
+        pcall(function() Tracer:Destroy() end)
+    end)
+end
+
+local lastHitNotify = 0
+local function NotifyHit(targetName)
+    if tick() - lastHitNotify > 1 then
+        lastHitNotify = tick()
+        Library:Notify({
+           Title = "Hit!",
+           Description = "Hit target: " .. tostring(targetName),
+           Time = 2
+        })
+    end
+end
+
+local function CreateOverlayGUI(name)
+    local gui = Instance.new("ScreenGui")
+    gui.Name = name
+    gui.ResetOnSpawn = false
+    gui.IgnoreGuiInset = true
+    gui.DisplayOrder = 999
+    if getgenv().protectgui then pcall(getgenv().protectgui, gui) end
+    
+    pcall(function() gui.Parent = game:GetService("CoreGui") end)
+    if not gui.Parent then 
+        local pgui = LocalPlayer:FindFirstChild("PlayerGui")
+        if pgui then gui.Parent = pgui else
+            task.spawn(function()
+                gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+            end)
+        end
+    end
+    return gui
+end
+
+local target_line = (function()
+    local LineGui = CreateOverlayGUI("TargetLineGui")
+
+    local LineFrame = Instance.new("Frame")
+    LineFrame.Parent = LineGui
+    LineFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+    LineFrame.BorderSizePixel = 0
+    LineFrame.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
+    LineFrame.Active = false
+    pcall(function() LineFrame.Interactable = false end)
+    
+    local line = {
+        Visible = false,
+        From = Vector2.new(0, 0),
+        To = Vector2.new(0, 0),
+        Color = Color3.fromRGB(255, 0, 0),
+        Thickness = 2
+    }
+    
+    function line:Update()
+        LineFrame.Visible = self.Visible
+        if self.Visible then
+            local dist = (self.To - self.From).Magnitude
+            LineFrame.Size = UDim2.new(0, dist, 0, self.Thickness)
+            local center = (self.From + self.To) / 2
+            LineFrame.Position = UDim2.new(0, center.X, 0, center.Y)
+            LineFrame.Rotation = math.deg(math.atan2(self.To.Y - self.From.Y, self.To.X - self.From.X))
+            LineFrame.BackgroundColor3 = self.Color
+        end
+    end
+    
+    return line
+end)()
+
+local fov_circle = (function()
+    local FOVGui = CreateOverlayGUI("FOVCircleGui")
+
+    local FOVContainer = Instance.new("Frame")
+    FOVContainer.Parent = FOVGui
+    FOVContainer.AnchorPoint = Vector2.new(0.5, 0.5)
+    FOVContainer.Position = UDim2.new(0.5, 0, 0.5, 0)
+    FOVContainer.BackgroundTransparency = 1
+    FOVContainer.Size = UDim2.new(0, 0, 0, 0)
+    FOVContainer.Active = false
+    pcall(function() FOVContainer.Interactable = false end)
+    
+    local lines = {}
+    for i = 1, 19 do
+        local line = Instance.new("Frame")
+        line.Parent = FOVContainer
+        line.AnchorPoint = Vector2.new(0.5, 0.5)
+        line.BorderSizePixel = 0
+        line.BackgroundColor3 = Color3.fromRGB(240, 240, 240)
+        
+        local angle = math.rad((i - 1) * (360 / 19))
+        table.insert(lines, {frame = line, angle = angle})
+    end
+
+    local circle = {
+        Visible = false,
+        Radius = 130,
+        Position = Vector2.new(0, 0),
+        Color = Color3.fromRGB(255, 255, 255),
+        Transparency = 1,
+        Rotation = 0,
+        Lines = lines,
+        Container = FOVContainer
+    }
+    
+    function circle:Update()
+        self.Container.Visible = self.Visible
+        if self.Visible then
+            self.Container.Position = UDim2.new(0, self.Position.X, 0, self.Position.Y)
+            self.Container.Rotation = self.Rotation
+            
+            local d = self.Radius * math.cos(math.pi / 19)
+            local s = 2 * self.Radius * math.sin(math.pi / 19)
+            
+            for i, lineData in ipairs(self.Lines) do
+                local line = lineData.frame
+                line.BackgroundColor3 = self.Color
+                line.BackgroundTransparency = 1 - self.Transparency
+                
+                local angle = lineData.angle
+                local x = math.cos(angle) * d
+                local y = math.sin(angle) * d
+                
+                line.Position = UDim2.new(0, x, 0, y)
+                line.Rotation = math.deg(angle) + 90
+                line.Size = UDim2.new(0, s + 3, 0, 2)
+            end
+        end
+    end
+    
+    return circle
+end)()
+
+local check360_display = (function()
+    local text = Drawing.new("Text")
+    text.Size = 25
+    text.Center = true
+    text.Outline = true
+    text.Color = Color3.fromRGB(255, 255, 255)
+    text.ZIndex = 2
+    text.Visible = false
+    text.Position = Vector2.new(Camera.ViewportSize.X / 2, 50)
+    
+    return text
+end)()
+
+local coord_marker = (function()
+    local circle = Drawing.new("Circle")
+    circle.Radius = 30
+    circle.Thickness = 2
+    circle.Filled = false
+    circle.Color = Color3.fromRGB(255, 0, 0)
+    circle.Visible = false
+    circle.ZIndex = 10
+    return circle
+end)()
+
+local coord_text = (function()
+    local text = Drawing.new("Text")
+    text.Size = 18
+    text.Center = true
+    text.Outline = true
+    text.Color = Color3.fromRGB(255, 0, 0)
+    text.Visible = false
+    text.ZIndex = 11
+    return text
+end)()
+
+local ExpectedArguments = {
+    FindPartOnRayWithIgnoreList = {
+        ArgCountRequired = 3,
+        Args = {
+            "Instance", "Ray", "table", "boolean", "boolean"
+        }
+    },
+    FindPartOnRayWithWhitelist = {
+        ArgCountRequired = 3,
+        Args = {
+            "Instance", "Ray", "table", "boolean"
+        }
+    },
+    FindPartOnRay = {
+        ArgCountRequired = 2,
+        Args = {
+            "Instance", "Ray", "Instance", "boolean", "boolean"
+        }
+    },
+    Raycast = {
+        ArgCountRequired = 3,
+        Args = {
+            "Instance", "Vector3", "Vector3", "RaycastParams"
+        }
+    }
+}
+
+function CalculateChance(Percentage)
+    Percentage = math.floor(Percentage)
+    local chance = math.floor(Random.new().NextNumber(Random.new(), 0, 1) * 100) / 100
+    return chance <= Percentage / 100
+end
+
+local function getPositionOnScreen(Vector)
+    local Vec3, OnScreen = WorldToScreen(Camera, Vector)
+    return Vector2.new(Vec3.X, Vec3.Y), OnScreen
+end
+
+local function ValidateArguments(Args, RayMethod)
+    local Matches = 0
+    if #Args < RayMethod.ArgCountRequired then
+        return false
+    end
+    for Pos, Argument in next, Args do
+        if typeof(Argument) == RayMethod.Args[Pos] then
+            Matches = Matches + 1
+        end
+    end
+    return Matches >= RayMethod.ArgCountRequired
+end
+
+local function getDirection(Origin, Position)
+    return (Position - Origin).Unit * 1000
+end
+
+local function getMousePosition()
+    return Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+end
+
+local function HasLineOfSight(targetPart)
+    if not (targetPart and targetPart.Parent) then return false end
+    if not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then return false end
+    local origin = LocalPlayer.Character.HumanoidRootPart.Position
+    local destination = targetPart.Position
+    local direction = destination - origin
+    
+    local raycastParams = RaycastParams.new()
+    raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+    raycastParams.FilterDescendantsInstances = {LocalPlayer.Character, targetPart.Parent}
+    
+    local result = workspace:Raycast(origin, direction, raycastParams)
+    return result == nil
+end
+
+local function IsPlayerVisible(Player)
+    if not (Player and Player.Character and LocalPlayer.Character) then return false end 
+    
+    local Target = FindFirstChild(Player.Character, SilentAimSettings.TargetPart) or FindFirstChild(Player.Character, "HumanoidRootPart")
+    
+    if not Target then return false end 
+    
+    local CastPoints = {Target.Position, LocalPlayer.Character, Player.Character}
+    local IgnoreList = {LocalPlayer.Character, Player.Character}
+    local ObscuringObjects = #GetPartsObscuringTarget(Camera, CastPoints, IgnoreList)
+    
+    return ObscuringObjects == 0
+end
+
+local function getClosestPlayer()
+    if not SilentAimSettings.TargetPart then return end
+    local Closest
+    local DistanceToMouse
+    for _, Player in ipairs(GetPlayers(Players)) do
+        if Player == LocalPlayer then continue end
+        if SilentAimSettings.TeamCheck and Player.Team == LocalPlayer.Team then continue end
+
+        local Character = Player.Character
+        if not Character then continue end
+        
+        if SilentAimSettings.VisibleCheck and not IsPlayerVisible(Player) then continue end
+
+        local HumanoidRootPart = FindFirstChild(Character, "HumanoidRootPart")
+        local Humanoid = FindFirstChild(Character, "Humanoid")
+        if not HumanoidRootPart or not Humanoid or Humanoid.Health <= 0 then continue end
+
+        local ScreenPosition, OnScreen = getPositionOnScreen(HumanoidRootPart.Position)
+        if not OnScreen then continue end
+
+        local Distance = (getMousePosition() - ScreenPosition).Magnitude
+        if Distance <= (DistanceToMouse or SilentAimSettings.FOVRadius or 2000) then
+            Closest = ((SilentAimSettings.TargetPart == "Random" and Character[ValidTargetParts[math.random(1, #ValidTargetParts)]]) or Character[SilentAimSettings.TargetPart])
+            DistanceToMouse = Distance
+        end
+    end
+    return Closest
+end
+
+local Tabs = {
+	Main = Window:AddTab("Main", "crosshair"),
+	Combat = Window:AddTab("Combat", "swords"),
+	Visuals = Window:AddTab("Visuals", "eye"),
+	Movement = Window:AddTab("Movement", "fast-forward"),
+    Misc = Window:AddTab("Misc", "list"),
+	["UI Settings"] = Window:AddTab("UI Settings", "settings"),
+}
+
+local MainGroupBox = Tabs.Main:AddLeftGroupbox("Silent Aim")
+local CombatGroupBox = Tabs.Combat:AddLeftGroupbox("Combat Settings")
+local VisualsGroupBox1 = Tabs.Visuals:AddLeftGroupbox("Player Visuals")
+local VisualsGroupBox2 = Tabs.Visuals:AddRightGroupbox("World & FOV")
+local MovementGroupBox = Tabs.Movement:AddLeftGroupbox("Movement")
+local MiscGroupBox = Tabs.Misc:AddLeftGroupbox("Miscellaneous")
+
+CombatGroupBox:AddToggle("AntiAimToggle", {
+    Text = "Enable Anti-Aim (Fast Spin)",
+    Default = SilentAimSettings.AntiAimEnabled,
+    Callback = function(Value)
+        SilentAimSettings.AntiAimEnabled = Value
+    end,
+})
+
+CombatGroupBox:AddToggle("HitboxExpanderToggle", {
+    Text = "Hitbox Expander",
+    Default = SilentAimSettings.HitboxExpander,
+    Callback = function(Value)
+        SilentAimSettings.HitboxExpander = Value
+    end,
+})
+
+CombatGroupBox:AddDropdown("HitboxTypeDropdown", {
+    Text = "Hitbox Part",
+    Values = {"Head", "Body"},
+    Default = 1,
+    Multi = false,
+    Callback = function(Value)
+        SilentAimSettings.HitboxType = Value
+    end,
+})
+
+CombatGroupBox:AddSlider("HitboxSizeSlider", {
+    Text = "Hitbox Size",
+    Default = SilentAimSettings.HitboxSize,
+    Min = 0,
+    Max = 10,
+    Rounding = 0,
+    Suffix = " Studs",
+    Callback = function(Value)
+        SilentAimSettings.HitboxSize = Value
+    end,
+})
+
+MainGroupBox:AddToggle("AimbotToggle", {
+    Text = "Enable Silent Aim",
+    Default = SilentAimSettings.Enabled,
+    Callback = function(Value)
+        SilentAimSettings.Enabled = Value
+        target_line.Visible = SilentAimSettings.Enabled and SilentAimSettings.ShowSilentAimTarget
+    end,
+})
+
+MainGroupBox:AddToggle("TeamCheckToggle", {
+    Text = "Team Check",
+    Default = SilentAimSettings.TeamCheck,
+    Callback = function(Value)
+        SilentAimSettings.TeamCheck = Value
+    end,
+})
+
+MainGroupBox:AddToggle("VisCheckToggle", {
+    Text = "Visible Check",
+    Default = SilentAimSettings.VisibleCheck,
+    Callback = function(Value)
+        SilentAimSettings.VisibleCheck = Value
+    end,
+})
+
+MainGroupBox:AddDropdown("TargetPartDrop", {
+    Text = "Target Part",
+    Values = {"Head", "HumanoidRootPart", "Random"},
+    Default = 2,
+    Multi = false,
+    Callback = function(Value)
+        SilentAimSettings.TargetPart = Value
+    end,
+})
+
+MainGroupBox:AddSlider("HitChanceSlider", {
+    Text = "Hit Chance",
+    Default = SilentAimSettings.HitChance,
+    Min = 0,
+    Max = 100,
+    Rounding = 0,
+    Suffix = "%",
+    Callback = function(Value)
+        SilentAimSettings.HitChance = Value
+    end,
+})
+
+VisualsGroupBox1:AddToggle("ThirdPersonToggle", {
+    Text = "Third Person Mode",
+    Default = SilentAimSettings.ThirdPersonEnabled,
+    Callback = function(Value)
+        SilentAimSettings.ThirdPersonEnabled = Value
+        if not Value then
+            pcall(function()
+                LocalPlayer.CameraMode = Enum.CameraMode.Classic
+                LocalPlayer.CameraMaxZoomDistance = 12.5
+            end)
+        end
+    end,
+})
+
+VisualsGroupBox1:AddSlider("ThirdPersonDistSlider", {
+    Text = "Third Person Distance",
+    Default = SilentAimSettings.ThirdPersonDistance,
+    Min = 0,
+    Max = 100,
+    Rounding = 0,
+    Suffix = " Studs",
+    Callback = function(Value)
+        SilentAimSettings.ThirdPersonDistance = Value
+    end,
+})
+
+VisualsGroupBox1:AddToggle("Check360Toggle", {
+    Text = "360 Check (Nearby Players)",
+    Default = SilentAimSettings.Check360Enabled,
+    Callback = function(Value)
+        SilentAimSettings.Check360Enabled = Value
+    end,
+})
+
+VisualsGroupBox1:AddToggle("FOVVisibleToggle", {
+    Text = "Show FOV Circle",
+    Default = SilentAimSettings.FOVVisible,
+    Callback = function(Value)
+        SilentAimSettings.FOVVisible = Value
+        fov_circle.Visible = Value
+    end,
+})
+
+VisualsGroupBox1:AddToggle("SkyboxToggle", {
+    Text = "Enable Skybox (Custom)",
+    Default = SilentAimSettings.SkyboxEnabled,
+    Callback = function(Value)
+        SilentAimSettings.SkyboxEnabled = Value
+        local lighting = game:GetService("Lighting")
+        local sky = lighting:FindFirstChild("CustomSky")
+        if Value then
+            if not sky then
+                sky = Instance.new("Sky")
+                sky.Name = "CustomSky"
+                sky.Parent = lighting
+            end
+            local id = "rbxassetid://97446575154133"
+            sky.SkyboxBk = id
+            sky.SkyboxDn = id
+            sky.SkyboxFt = id
+            sky.SkyboxLf = id
+            sky.SkyboxRt = id
+            sky.SkyboxUp = id
+        else
+            if sky then
+                sky:Destroy()
+            end
+        end
+    end,
+})
+
+VisualsGroupBox1:AddSlider("FOVRadSlider", {
+    Text = "FOV Radius",
+    Default = SilentAimSettings.FOVRadius,
+    Min = 0,
+    Max = 800,
+    Rounding = 0,
+    Suffix = "px",
+    Callback = function(Value)
+        SilentAimSettings.FOVRadius = Value
+        fov_circle.Radius = Value
+    end,
+})
+
+VisualsGroupBox2:AddToggle("TargetBoxToggle", {
+    Text = "Show Target Tracer",
+    Default = SilentAimSettings.ShowSilentAimTarget,
+    Callback = function(Value)
+        SilentAimSettings.ShowSilentAimTarget = Value
+        target_line.Visible = Value
+    end,
+})
+
+
+VisualsGroupBox2:AddToggle("SimpleESPEnabledToggle", {
+    Text = "Simple ESP (No Lag)",
+    Default = SilentAimSettings.SimpleESPEnabled,
+    Callback = function(Value)
+        SilentAimSettings.SimpleESPEnabled = Value
+    end,
+})
+VisualsGroupBox2:AddToggle("ESPEnabledToggle", {
+    Text = "Enable ESP",
+    Default = SilentAimSettings.ESPEnabled,
+    Callback = function(Value)
+        SilentAimSettings.ESPEnabled = Value
+    end,
+})
+
+VisualsGroupBox2:AddToggle("MorningTimeToggle", {
+    Text = "Always Morning",
+    Default = SilentAimSettings.MorningTime,
+    Callback = function(Value)
+        SilentAimSettings.MorningTime = Value
+        if Value then
+            game:GetService("Lighting").TimeOfDay = "08:00:00"
+        end
+    end,
+})
+
+VisualsGroupBox2:AddToggle("DeathESPEnabledToggle", {
+    Text = "Enable Dead Body ESP",
+    Default = SilentAimSettings.DeathESPEnabled,
+    Callback = function(Value)
+        SilentAimSettings.DeathESPEnabled = Value
+    end,
+})
+
+VisualsGroupBox2:AddToggle("BulletTracerToggle", {
+    Text = "Show Bullet Tracers",
+    Default = SilentAimSettings.ShowBulletTracers,
+    Callback = function(Value)
+        SilentAimSettings.ShowBulletTracers = Value
+    end,
+})
+
+VisualsGroupBox2:AddToggle("HitNotifyToggle", {
+    Text = "Show Hit Notifications",
+    Default = SilentAimSettings.ShowHitNotifications,
+    Callback = function(Value)
+        SilentAimSettings.ShowHitNotifications = Value
+    end,
+})
+
+VisualsGroupBox2:AddToggle("CustomFOVToggle", {
+    Text = "Custom FOV (Stretch Screen)",
+    Default = SilentAimSettings.CustomCameraFOV,
+    Callback = function(Value)
+        SilentAimSettings.CustomCameraFOV = Value
+    end,
+})
+
+VisualsGroupBox2:AddSlider("CameraFOVSlider", {
+    Text = "Camera FOV Amount",
+    Default = SilentAimSettings.CameraFOVAmount,
+    Min = 70,
+    Max = 120,
+    Rounding = 0,
+    Suffix = "°",
+    Callback = function(Value)
+        SilentAimSettings.CameraFOVAmount = Value
+    end,
+})
+
+MovementGroupBox:AddToggle("VflyToggle", {
+    Text = "Enable Vfly (Vehicle Fly)",
+    Default = SilentAimSettings.VflyEnabled,
+    Callback = function(Value)
+        SilentAimSettings.VflyEnabled = Value
+    end,
+})
+
+MovementGroupBox:AddSlider("VflySpeedSlider", {
+    Text = "Vfly Speed",
+    Default = SilentAimSettings.VflySpeed,
+    Min = 1,
+    Max = 10,
+    Rounding = 0,
+    Suffix = "x",
+    Callback = function(Value)
+        SilentAimSettings.VflySpeed = Value
+    end,
+})
+
+MovementGroupBox:AddToggle("SpiderToggle", {
+    Text = "Spider (Climb Walls)",
+    Default = SilentAimSettings.SpiderEnabled,
+    Callback = function(Value)
+        SilentAimSettings.SpiderEnabled = Value
+    end,
+})
+
+MovementGroupBox:AddSlider("SpiderSpeedSlider", {
+    Text = "Spider Speed",
+    Default = SilentAimSettings.SpiderSpeed,
+    Min = 10,
+    Max = 100,
+    Rounding = 0,
+    Callback = function(Value)
+        SilentAimSettings.SpiderSpeed = Value
+    end,
+})
+
+MiscGroupBox:AddToggle("FlyJumpToggle", {
+    Text = "Enable Fly Jump",
+    Default = SilentAimSettings.FlyJumpEnabled,
+    Callback = function(Value)
+        SilentAimSettings.FlyJumpEnabled = Value
+    end,
+})
+
+MiscGroupBox:AddToggle("ZoomButtonToggle", {
+    Text = "Enable Zoom Button",
+    Default = SilentAimSettings.ZoomButtonEnabled,
+    Callback = function(Value)
+        SilentAimSettings.ZoomButtonEnabled = Value
+        if getgenv().ZoomToggleGui then
+            getgenv().ZoomToggleGui.Enabled = Value
+        end
+    end,
+})
+
+MiscGroupBox:AddToggle("UwUSoundToggle", {
+    Text = "UwU Hit Sound (Replaces HitServer)",
+    Default = SilentAimSettings.UwUHitSound,
+    Callback = function(Value)
+        SilentAimSettings.UwUHitSound = Value
+        if Value then
+            local function replaceNow(parent)
+                for _, v in pairs(parent:GetDescendants()) do
+                    if v:IsA("Sound") and v.Name == "HitServer" and v.SoundId ~= "rbxassetid://139219844119994" then
+                        v.SoundId = "rbxassetid://139219844119994"
+                    end
+                end
+            end
+            pcall(function() replaceNow(workspace) end)
+            pcall(function() replaceNow(game:GetService("Players")) end)
+            pcall(function() replaceNow(game:GetService("ReplicatedStorage")) end)
+        end
+    end,
+})
+
+MiscGroupBox:AddToggle("CuteSoundToggle", {
+    Text = "Cute Open Sound (Nya)",
+    Default = SilentAimSettings.CuteOpenSound,
+    Callback = function(Value)
+        SilentAimSettings.CuteOpenSound = Value
+        if Value then
+            local function replaceNow(parent)
+                for _, v in pairs(parent:GetDescendants()) do
+                    if v:IsA("Sound") and v.Name == "PlayerOpenSound" and v.SoundId ~= "rbxassetid://137965684634919" then
+                        v.SoundId = "rbxassetid://137965684634919"
+                    end
+                end
+            end
+            pcall(function() replaceNow(workspace) end)
+            pcall(function() replaceNow(game:GetService("Players")) end)
+            pcall(function() replaceNow(game:GetService("ReplicatedStorage")) end)
+        end
+    end,
+})
+
+MiscGroupBox:AddToggle("AutoHempToggle", {
+    Text = "Auto Hemp (Auto Collect)",
+    Default = SilentAimSettings.AutoHempEnabled,
+    Callback = function(Value)
+        SilentAimSettings.AutoHempEnabled = Value
+    end,
+})
+
+local function checkSound(v)
+    if v:IsA("Sound") then
+        if v.Name == "HitServer" then
+            if SilentAimSettings.UwUHitSound then
+                v.SoundId = "rbxassetid://139219844119994"
+            end
+            v:GetPropertyChangedSignal("SoundId"):Connect(function()
+                if SilentAimSettings.UwUHitSound and v.SoundId ~= "rbxassetid://139219844119994" then
+                    v.SoundId = "rbxassetid://139219844119994"
+                end
+            end)
+        elseif v.Name == "PlayerOpenSound" then
+            if SilentAimSettings.CuteOpenSound then
+                v.SoundId = "rbxassetid://137965684634919"
+            end
+            v:GetPropertyChangedSignal("SoundId"):Connect(function()
+                if SilentAimSettings.CuteOpenSound and v.SoundId ~= "rbxassetid://137965684634919" then
+                    v.SoundId = "rbxassetid://137965684634919"
+                end
+            end)
+        end
+    end
+end
+
+pcall(function()
+    for _, v in pairs(workspace:GetDescendants()) do checkSound(v) end
+    for _, v in pairs(game:GetService("Players"):GetDescendants()) do checkSound(v) end
+    for _, v in pairs(game:GetService("ReplicatedStorage"):GetDescendants()) do checkSound(v) end
+
+    workspace.DescendantAdded:Connect(checkSound)
+    game:GetService("Players").DescendantAdded:Connect(checkSound)
+    game:GetService("ReplicatedStorage").DescendantAdded:Connect(checkSound)
+end)
+
+MiscGroupBox:AddToggle("WeaponSkinToggle", {
+    Text = "Enable Custom Weapon Skin",
+    Default = SilentAimSettings.WeaponSkinEnabled,
+    Callback = function(Value)
+        SilentAimSettings.WeaponSkinEnabled = Value
+        if Value and LocalPlayer.Character and _G.hookCharacter then
+            pcall(function() _G.hookCharacter(LocalPlayer.Character) end)
+        end
+    end,
+})
+
+local SKIN_ID = "rbxassetid://109571469973979"
+local appliedWeaponSkins = {}
+
+local function applyWeaponSkin(part)
+    if not part or not part:IsA("BasePart") then return end
+    if part.Transparency >= 0.9 then return end
+
+    local n = part.Name:lower()
+    if n:find("arm") or n:find("hand") or n:find("leg") or n:find("torso") or n:find("head") then return end
+
+    if appliedWeaponSkins[part] then return end
+    appliedWeaponSkins[part] = true
+
+    pcall(function()
+        if part:IsA("MeshPart") then
+            part.TextureID = SKIN_ID
+        end
+    end)
+
+    for _, v in pairs(part:GetChildren()) do
+        if v:IsA("Texture") or v:IsA("Decal") or v:IsA("SurfaceAppearance") then
+            pcall(function()
+                v:Destroy()
+            end)
+        end
+    end
+
+    for _, f in pairs(Enum.NormalId:GetEnumItems()) do
+        local t = Instance.new("Texture")
+        t.Name = "CustomSkin"
+        t.Texture = SKIN_ID
+        t.Face = f
+        t.Parent = part
+    end
+
+    part.CastShadow = false
+end
+
+local function applyToolSkin(tool)
+    if not SilentAimSettings.WeaponSkinEnabled then return end
+    for _, d in pairs(tool:GetDescendants()) do
+        applyWeaponSkin(d)
+    end
+end
+
+_G.hookCharacter = function(char)
+    appliedWeaponSkins = {}
+
+    char.ChildAdded:Connect(function(obj)
+        if obj:IsA("Tool") then
+            task.wait(0.1)
+            applyToolSkin(obj)
+        end
+    end)
+
+    for _, obj in pairs(char:GetChildren()) do
+        if obj:IsA("Tool") then
+            applyToolSkin(obj)
+        end
+    end
+end
+
+if LocalPlayer.Character then
+    _G.hookCharacter(LocalPlayer.Character)
+end
+LocalPlayer.CharacterAdded:Connect(function(char)
+    _G.hookCharacter(char)
+end)
+
+local flyJumpStart = 0
+local flyActive = false
+local lastJumpRequest = 0
+
+UserInputService.JumpRequest:Connect(function()
+    lastJumpRequest = tick()
+    if SilentAimSettings.FlyJumpEnabled then
+        local character = LocalPlayer.Character
+        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+        local hrp = character and character:FindFirstChild("HumanoidRootPart")
+
+        if humanoid and hrp and humanoid.Health > 0 then
+            humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+            
+            if humanoid.FloorMaterial ~= Enum.Material.Air then
+                flyJumpStart = tick()
+                flyActive = true
+            elseif not flyActive then
+                flyJumpStart = tick()
+                flyActive = true
+            end
+        end
+    end
+end)
+
+local defaultFOV = 70
+local zooming = false
+local function CreateZoomButton()
+    local gui = CreateOverlayGUI("ZoomButtonGui")
+    getgenv().ZoomToggleGui = gui
+    gui.Enabled = SilentAimSettings.ZoomButtonEnabled
+    
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0, 60, 0, 60)
+    btn.Position = UDim2.new(1, -80, 0.5, -30)
+    btn.BackgroundColor3 = Color3.fromRGB(150, 150, 150)
+    btn.Text = ""
+    btn.Parent = gui
+    btn.Active = true
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 12)
+    corner.Parent = btn
+    
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = Color3.fromRGB(0, 0, 0)
+    stroke.Thickness = 3
+    stroke.Parent = btn
+    
+    local icon = Instance.new("ImageLabel")
+    icon.Size = UDim2.new(0.6, 0, 0.6, 0)
+    icon.Position = UDim2.new(0.2, 0, 0.2, 0)
+    icon.BackgroundTransparency = 1
+    icon.Image = "rbxassetid://74200505949194"
+    icon.ImageColor3 = Color3.fromRGB(255, 255, 255)
+    icon.Parent = btn
+    
+    btn.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            zooming = true
+        end
+    end)
+    btn.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            zooming = false
+            if not SilentAimSettings.CustomCameraFOV then
+                Camera.FieldOfView = defaultFOV
+            end
+        end
+    end)
+end
+
+CreateZoomButton()
+
+local FlyJumpGui = CreateOverlayGUI("FlyJumpGui")
+
+local FlyJumpContainer = Instance.new("Frame")
+FlyJumpContainer.Size = UDim2.new(0, 300, 0, 14)
+FlyJumpContainer.Position = UDim2.new(0.5, 0, 0.75, 0)
+FlyJumpContainer.AnchorPoint = Vector2.new(0.5, 0.5)
+FlyJumpContainer.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+FlyJumpContainer.BorderSizePixel = 0
+FlyJumpContainer.Visible = false
+FlyJumpContainer.Parent = FlyJumpGui
+
+local FlyJumpBar = Instance.new("Frame")
+FlyJumpBar.Size = UDim2.new(0, 0, 1, 0)
+FlyJumpBar.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
+FlyJumpBar.BorderSizePixel = 0
+FlyJumpBar.Parent = FlyJumpContainer
+
+local FlyJumpText = Instance.new("TextLabel")
+FlyJumpText.Size = UDim2.new(1, 0, 0, 30)
+FlyJumpText.Position = UDim2.new(0, 0, 1, 10)
+FlyJumpText.BackgroundTransparency = 1
+FlyJumpText.TextColor3 = Color3.fromRGB(255, 255, 255)
+FlyJumpText.TextSize = 25
+FlyJumpText.Font = Enum.Font.GothamBold
+FlyJumpText.Text = "0.0S"
+FlyJumpText.Parent = FlyJumpContainer
+
+local function getESPBox(character, camera)
+    local hrp = character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+    
+    local rootPos, onScreen = camera:WorldToViewportPoint(hrp.Position)
+    if not onScreen then return false end
+    
+    local cf, size = character:GetBoundingBox()
+    
+    local topPos = camera:WorldToViewportPoint(cf.Position + Vector3.new(0, size.Y/2, 0))
+    local bottomPos = camera:WorldToViewportPoint(cf.Position - Vector3.new(0, size.Y/2, 0))
+    
+    local height = math.abs(topPos.Y - bottomPos.Y)
+    local width = height * 0.6
+    
+    local topY = math.min(topPos.Y, bottomPos.Y)
+    
+    return true, Vector2.new(rootPos.X - width/2, topY), Vector2.new(width, height), rootPos.Z
+end
+
+
+local SimpleESPObjects = {}
+
+local function createSimpleESP()
+    local Box = Drawing.new("Square")
+    Box.Thickness = 1
+    Box.Filled = false
+    Box.Color = Color3.fromRGB(0, 255, 0)
+    Box.ZIndex = 1
+    
+    local Name = Drawing.new("Text")
+    Name.Size = 14
+    Name.Center = true
+    Name.Color = Color3.fromRGB(255, 255, 255)
+    Name.Outline = true
+    Name.ZIndex = 2
+    
+    local HealthText = Drawing.new("Text")
+    HealthText.Size = 12
+    HealthText.Center = true
+    HealthText.Color = Color3.fromRGB(0, 255, 0)
+    HealthText.Outline = true
+    HealthText.ZIndex = 2
+    
+    return {
+        Box = Box,
+        Name = Name,
+        HealthText = HealthText,
+        SetVisible = function(self, vis)
+            self.Box.Visible = vis
+            self.Name.Visible = vis
+            self.HealthText.Visible = vis
+        end,
+        Destroy = function(self)
+            self.Box:Remove()
+            self.Name:Remove()
+            self.HealthText:Remove()
+        end
+    }
+end
+
+local function getSimpleESPBox(character, camera)
+    local hrp = character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+    
+    local rootPos, onScreen = camera:WorldToViewportPoint(hrp.Position)
+    if not onScreen then return false end
+    
+    local topPos = camera:WorldToViewportPoint(hrp.Position + Vector3.new(0, 3, 0))
+    local bottomPos = camera:WorldToViewportPoint(hrp.Position - Vector3.new(0, 3.5, 0))
+    
+    local height = math.abs(topPos.Y - bottomPos.Y)
+    local width = height * 0.6
+    local topY = math.min(topPos.Y, bottomPos.Y)
+    
+    return true, Vector2.new(rootPos.X - width/2, topY), Vector2.new(width, height), rootPos.Z
+end
+
+local ESPObjects = {}
+
+local function createESP()
+    local Box = Drawing.new("Square")
+    Box.Thickness = 1
+    Box.Filled = false
+    Box.Color = Color3.fromRGB(220, 220, 220)
+    Box.ZIndex = 1
+    
+    local Name = Drawing.new("Text")
+    Name.Size = 16
+    Name.Center = true
+    Name.Color = Color3.fromRGB(220, 220, 220)
+    Name.Outline = true
+    Name.ZIndex = 2
+    
+    local HealthBarBg = Drawing.new("Square")
+    HealthBarBg.Thickness = 1
+    HealthBarBg.Filled = true
+    HealthBarBg.Color = Color3.fromRGB(0, 0, 0)
+    HealthBarBg.ZIndex = 1
+    
+    local HealthBarFill = Drawing.new("Square")
+    HealthBarFill.Thickness = 1
+    HealthBarFill.Filled = true
+    HealthBarFill.ZIndex = 2
+    
+    local HealthText = Drawing.new("Text")
+    HealthText.Size = 14
+    HealthText.Center = true
+    HealthText.Color = Color3.fromRGB(220, 220, 220)
+    HealthText.Outline = true
+    HealthText.ZIndex = 2
+    
+    local EquippedText = Drawing.new("Text")
+    EquippedText.Size = 14
+    EquippedText.Center = true
+    EquippedText.Color = Color3.fromRGB(255, 50, 50)
+    EquippedText.Outline = true
+    EquippedText.ZIndex = 2
+    
+    return {
+        Box = Box,
+        Name = Name,
+        HealthBarBg = HealthBarBg,
+        HealthBarFill = HealthBarFill,
+        HealthText = HealthText,
+        EquippedText = EquippedText,
+        SetVisible = function(self, vis)
+            self.Box.Visible = vis
+            self.Name.Visible = vis
+            self.HealthBarBg.Visible = vis
+            self.HealthBarFill.Visible = vis
+            self.HealthText.Visible = vis
+            self.EquippedText.Visible = vis
+        end,
+        Destroy = function(self)
+            self.Box:Remove()
+            self.Name:Remove()
+            self.HealthBarBg:Remove()
+            self.HealthBarFill:Remove()
+            self.HealthText:Remove()
+            self.EquippedText:Remove()
+        end
+    }
+end
+
+local function createDeathESP()
+    local Box = Drawing.new("Square")
+    Box.Thickness = 1
+    Box.Filled = false
+    Box.Color = Color3.fromRGB(255, 255, 255)
+    Box.ZIndex = 1
+    
+    local Name = Drawing.new("Text")
+    Name.Size = 13
+    Name.Center = true
+    Name.Color = Color3.fromRGB(255, 255, 255)
+    Name.Outline = true
+    Name.ZIndex = 2
+    Name.Text = "Dead body"
+    
+    local DistText = Drawing.new("Text")
+    DistText.Size = 12
+    DistText.Center = true
+    DistText.Color = Color3.fromRGB(200, 200, 200)
+    DistText.Outline = true
+    DistText.ZIndex = 2
+    
+    return {
+        Box = Box,
+        Name = Name,
+        DistText = DistText,
+        SetVisible = function(self, vis)
+            self.Box.Visible = vis
+            self.Name.Visible = vis
+            self.DistText.Visible = vis
+        end,
+        Destroy = function(self)
+            self.Box:Remove()
+            self.Name:Remove()
+            self.DistText:Remove()
+        end
+    }
+end
+
+local DeathESPObjects = {}
+
+for _, p in pairs(Players:GetPlayers()) do
+    if p ~= LocalPlayer then
+        ESPObjects[p] = createESP()
+        SimpleESPObjects[p] = createSimpleESP()
+    end
+end
+Players.PlayerAdded:Connect(function(p)
+    ESPObjects[p] = createESP()
+    SimpleESPObjects[p] = createSimpleESP()
+end)
+Players.PlayerRemoving:Connect(function(p)
+    if ESPObjects[p] then
+        ESPObjects[p]:Destroy()
+        ESPObjects[p] = nil
+    end
+    if SimpleESPObjects[p] then
+        SimpleESPObjects[p]:Destroy()
+        SimpleESPObjects[p] = nil
+    end
+end)
+
+local fovRotation = 0
+getgenv().FOVSpeedBoost = 0
+
+resume(create(function()
+    RenderStepped:Connect(function(dt)
+        local dtNum = typeof(dt) == "number" and dt or 0.016
+        
+        -- Always Morning
+        if SilentAimSettings.MorningTime then
+            game:GetService("Lighting").ClockTime = 8
+        end
+
+        -- Hitbox Expander
+        if SilentAimSettings.HitboxExpander then
+            for _, player in pairs(Players:GetPlayers()) do
+                if player ~= LocalPlayer and player.Character then
+                    local char = player.Character
+                    local parts = {}
+                    if SilentAimSettings.HitboxType == "Head" then
+                        local head = char:FindFirstChild("Head")
+                        if head then table.insert(parts, head) end
+                    else
+                        for _, v in pairs(char:GetChildren()) do
+                            if v:IsA("BasePart") and (v.Name:find("Torso") or v.Name:find("Arm") or v.Name:find("Leg")) then
+                                table.insert(parts, v)
+                            end
+                        end
+                    end
+                    
+                    for _, part in pairs(parts) do
+                        part.Size = Vector3.new(SilentAimSettings.HitboxSize, SilentAimSettings.HitboxSize, SilentAimSettings.HitboxSize)
+                        part.Transparency = 0.5
+                        part.CanCollide = false
+                    end
+                end
+            end
+        else
+            -- Check for players needing reset (simplified reset logic)
+            for _, player in pairs(Players:GetPlayers()) do
+                if player ~= LocalPlayer and player.Character then
+                    local char = player.Character
+                    local head = char:FindFirstChild("Head")
+                    if head and head.Transparency == 0.5 then
+                        head.Size = Vector3.new(2, 1, 1)
+                        head.Transparency = 0
+                        head.CanCollide = true
+                    end
+                    for _, v in pairs(char:GetChildren()) do
+                        if v:IsA("BasePart") and v.Transparency == 0.5 and (v.Name:find("Torso") or v.Name:find("Arm") or v.Name:find("Leg")) then
+                            if v.Name:find("Torso") then
+                                v.Size = Vector3.new(2, 2, 1)
+                            else
+                                v.Size = Vector3.new(1, 2, 1)
+                            end
+                            v.Transparency = 0
+                            v.CanCollide = true
+                        end
+                    end
+                end
+            end
+        end
+
+        -- 360 Check
+        if SilentAimSettings.Check360Enabled then
+            local count = 0
+            for _, player in pairs(Players:GetPlayers()) do
+                if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                    -- Filter by team if requested
+                    if SilentAimSettings.TeamCheck and player.Team == LocalPlayer.Team then continue end
+                    
+                    local hrp = player.Character.HumanoidRootPart
+                    local dist = (hrp.Position - Camera.CFrame.Position).Magnitude
+                    if dist <= 350 then -- Using 350 as distance as user mentioned 350 degrees (maybe they meant studs?)
+                        count = count + 1
+                    end
+                end
+            end
+            check360_display.Visible = true
+            check360_display.Text = "Players Around: " .. tostring(count)
+            check360_display.Position = Vector2.new(Camera.ViewportSize.X / 2, 70)
+        else
+            check360_display.Visible = false
+        end
+
+        -- Third Person
+        if SilentAimSettings.ThirdPersonEnabled then
+            LocalPlayer.CameraMode = Enum.CameraMode.Classic
+            LocalPlayer.CameraMaxZoomDistance = SilentAimSettings.ThirdPersonDistance
+            LocalPlayer.CameraMinZoomDistance = SilentAimSettings.ThirdPersonDistance
+        else
+            LocalPlayer.CameraMinZoomDistance = 0.5
+        end
+
+        -- Anti Aim (Simple 180 Backwards - Upright Fix)
+        if SilentAimSettings.AntiAimEnabled then
+            local char = LocalPlayer.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                -- Get camera look direction
+                local look = Camera.CFrame.LookVector
+                -- Zero out the Y axis to ensure the character stays strictly upright
+                local horizontalLook = Vector3.new(look.X, 0, look.Z).Unit
+                
+                -- Target direction is exactly opposite (180 degrees)
+                local targetLook = -horizontalLook
+                
+                -- Set CFrame at current position facing target direction (strictly horizontal)
+                hrp.CFrame = CFrame.lookAt(hrp.Position, hrp.Position + targetLook)
+            end
+        end
+
+        -- Vfly Logic
+        if SilentAimSettings.VflyEnabled then
+            local char = LocalPlayer.Character
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            if hum and hum.SeatPart then
+                local seat = hum.SeatPart
+                local moveDir = Camera.CFrame.LookVector
+                
+                -- Basic fly: Move seat in camera direction
+                seat.AssemblyLinearVelocity = moveDir * (SilentAimSettings.VflySpeed * 50)
+                seat.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+            end
+        end
+
+        -- Spider Logic
+        if SilentAimSettings.SpiderEnabled then
+            local char = LocalPlayer.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                local raycastParams = RaycastParams.new()
+                raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+                raycastParams.FilterDescendantsInstances = {char}
+                
+                -- Raycast in front of player
+                local lookDir = hrp.CFrame.LookVector
+                local result = workspace:Raycast(hrp.Position, lookDir * 1.5, raycastParams)
+                
+                if result then
+                    -- If we hitting something, move up
+                    hrp.AssemblyLinearVelocity = Vector3.new(hrp.AssemblyLinearVelocity.X, SilentAimSettings.SpiderSpeed, hrp.AssemblyLinearVelocity.Z)
+                end
+            end
+        end
+
+        if SilentAimSettings.ShowSilentAimTarget and SilentAimSettings.Enabled then
+            local HitPart = getClosestPlayer()
+            if HitPart then 
+                local RootToViewportPoint, IsOnScreen = WorldToViewportPoint(Camera, HitPart.Position);
+                
+                if IsOnScreen then
+                    target_line.Visible = true
+                    target_line.From = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+                    target_line.To = Vector2.new(RootToViewportPoint.X, RootToViewportPoint.Y)
+                else
+                    target_line.Visible = false
+                end
+            else 
+                target_line.Visible = false 
+            end
+        else
+            target_line.Visible = false 
+        end
+        
+        getgenv().FOVSpeedBoost = getgenv().FOVSpeedBoost > 0.1 and getgenv().FOVSpeedBoost * 0.95 or 0
+        fovRotation = (fovRotation + (10 + getgenv().FOVSpeedBoost) * dtNum) % 360
+        
+        if SilentAimSettings.FOVVisible then 
+            fov_circle.Visible = true
+            fov_circle.Position = getMousePosition()
+            fov_circle.Radius = SilentAimSettings.FOVRadius
+            fov_circle.Color = Color3.fromHSV((tick() * 0.1) % 1, 1, 1)
+            fov_circle.Rotation = fovRotation
+        else
+            fov_circle.Visible = false
+        end
+        if fov_circle.Update then fov_circle:Update() end
+        if target_line.Update then target_line:Update() end
+        
+        if zooming then
+            Camera.FieldOfView = 7.5
+        elseif SilentAimSettings.CustomCameraFOV then
+            Camera.FieldOfView = SilentAimSettings.CameraFOVAmount
+        end
+        
+        
+        if SilentAimSettings.SimpleESPEnabled then
+            for player, esp in pairs(SimpleESPObjects) do
+                local character = player.Character
+                local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+                
+                if character and humanoid and humanoid.Health > 0 and player ~= LocalPlayer then
+                    local onScreen, pos, size, dist = getSimpleESPBox(character, Camera)
+                    
+                    if onScreen and pos and size and dist then
+                        esp:SetVisible(true)
+                        
+                        esp.Box.Position = pos
+                        esp.Box.Size = size
+                        
+                        esp.Name.Text = tostring(player.Name) .. " [" .. tostring(math.floor(dist)) .. "]"
+                        esp.Name.Position = Vector2.new(pos.X + size.X/2, pos.Y - 18)
+                        
+                        esp.HealthText.Text = "HP: " .. tostring(math.floor(humanoid.Health))
+                        esp.HealthText.Position = Vector2.new(pos.X + size.X/2, pos.Y + size.Y + 2)
+                        
+                        local maxHp = humanoid.MaxHealth
+                        if not maxHp or maxHp <= 0 then maxHp = 100 end
+                        local hpPct = math.clamp(humanoid.Health / maxHp, 0, 1)
+                        local r = hpPct < 0.5 and 255 or math.floor(255 - (hpPct - 0.5) * 2 * 255)
+                        local g = hpPct < 0.5 and math.floor(hpPct * 2 * 255) or 255
+                        esp.HealthText.Color = Color3.fromRGB(r, g, 0)
+                    else
+                        esp:SetVisible(false)
+                    end
+                else
+                    esp:SetVisible(false)
+                end
+            end
+        else
+            for _, esp in pairs(SimpleESPObjects) do
+                esp:SetVisible(false)
+            end
+        end
+
+        if SilentAimSettings.ESPEnabled then
+            for player, esp in pairs(ESPObjects) do
+                local character = player.Character
+                local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+                
+                if character and humanoid and humanoid.Health > 0 and player ~= LocalPlayer then
+                    local onScreen, pos, size, dist = getESPBox(character, Camera)
+                    
+                    if onScreen then
+                        esp.Box.Visible = true
+                        esp.Name.Visible = true
+                        esp.HealthBarBg.Visible = true
+                        esp.HealthBarFill.Visible = true
+                        esp.HealthText.Visible = true
+                        esp.EquippedText.Visible = true
+                        
+                        for _, part in pairs(character:GetDescendants()) do
+                            if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
+                                if part.Material ~= Enum.Material.Neon or part.Color ~= Color3.fromRGB(255, 255, 255) then
+                                    part.Material = Enum.Material.Neon
+                                    part.Color = Color3.fromRGB(255, 255, 255)
+                                end
+                                if part:IsA("MeshPart") and part.TextureID ~= "" then
+                                    part.TextureID = ""
+                                end
+                            elseif part:IsA("SpecialMesh") then
+                                if part.TextureId ~= "" then
+                                    part.TextureId = ""
+                                end
+                            elseif part:IsA("Decal") or part:IsA("Texture") then
+                                if part.Transparency ~= 1 then
+                                    part.Transparency = 1
+                                end
+                            elseif part:IsA("Shirt") or part:IsA("Pants") or part:IsA("ShirtGraphic") or part:IsA("CharacterMesh") then
+                                part:Destroy()
+                            end
+                        end
+                        
+                        if character:FindFirstChild("HumanoidRootPart") and not character.HumanoidRootPart:FindFirstChild("ESPLight") then
+                            local light = Instance.new("PointLight")
+                            light.Name = "ESPLight"
+                            light.Color = Color3.fromRGB(255, 255, 255)
+                            light.Brightness = 3
+                            light.Range = 10
+                            light.Parent = character.HumanoidRootPart
+                        end
+                        
+                        esp.Box.Position = pos
+                        esp.Box.Size = size
+                        
+                        esp.Name.Text = player.DisplayName .. " [" .. math.floor(dist) .. "m]"
+                        esp.Name.Position = Vector2.new(pos.X + size.X/2, pos.Y - 18)
+                        
+                        local hpPct = math.clamp(humanoid.Health / humanoid.MaxHealth, 0, 1)
+                        esp.HealthBarBg.Position = Vector2.new(pos.X, pos.Y + size.Y + 2)
+                        esp.HealthBarBg.Size = Vector2.new(size.X, 4)
+                        
+                        esp.HealthBarFill.Position = esp.HealthBarBg.Position
+                        esp.HealthBarFill.Size = Vector2.new(size.X * hpPct, 4)
+                        
+                        local r = hpPct < 0.5 and 255 or math.floor(255 - (hpPct - 0.5) * 2 * 255)
+                        local g = hpPct < 0.5 and math.floor(hpPct * 2 * 255) or 255
+                        esp.HealthBarFill.Color = Color3.fromRGB(r, g, 0)
+                        
+                        esp.HealthText.Text = math.floor(humanoid.Health) .. " / " .. math.floor(humanoid.MaxHealth)
+                        esp.HealthText.Position = Vector2.new(pos.X + size.X/2, pos.Y + size.Y + 6)
+                        
+                        local tool = character:FindFirstChildOfClass("Tool")
+                        esp.EquippedText.Text = tool and tool.Name or "None"
+                        esp.EquippedText.Position = Vector2.new(pos.X + size.X/2, pos.Y + size.Y + 20)
+                    else
+                        esp:SetVisible(false)
+                    end
+                else
+                    esp:SetVisible(false)
+                end
+            end
+            
+            -- Death Backpacks ESP
+            if SilentAimSettings.DeathESPEnabled then
+                local deathFolder = workspace:FindFirstChild("DeathBackpacks")
+                if deathFolder then
+                    for _, obj in pairs(deathFolder:GetChildren()) do
+                        if not DeathESPObjects[obj] then
+                            DeathESPObjects[obj] = createDeathESP()
+                        end
+                        
+                        local esp = DeathESPObjects[obj]
+                        local primary = obj:IsA("Model") and (obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")) or (obj:IsA("BasePart") and obj)
+                        
+                        if primary then
+                            local screenPos, onScreen = Camera:WorldToViewportPoint(primary.Position)
+                            local dist = (Camera.CFrame.Position - primary.Position).Magnitude
+                            
+                            if onScreen and dist <= 100 then
+                                local playerBoxHeight = (Camera:WorldToViewportPoint(primary.Position + Vector3.new(0, 3, 0)).Y - Camera:WorldToViewportPoint(primary.Position - Vector3.new(0, 3, 0)).Y)
+                                local height = math.abs(playerBoxHeight) * 0.25 -- 1/4 size
+                                local width = height * 1.2
+                                
+                                esp.Box.Visible = true
+                                esp.Name.Visible = true
+                                esp.DistText.Visible = true
+                                
+                                esp.Box.Position = Vector2.new(screenPos.X - width/2, screenPos.Y - height/2)
+                                esp.Box.Size = Vector2.new(width, height)
+                                
+                                esp.Name.Position = Vector2.new(screenPos.X, screenPos.Y - height/2 - 14)
+                                esp.DistText.Position = Vector2.new(screenPos.X, screenPos.Y + height/2 + 2)
+                                esp.DistText.Text = "[" .. math.floor(dist) .. "m]"
+                            else
+                                esp:SetVisible(false)
+                            end
+                        else
+                            esp:SetVisible(false)
+                        end
+                    end
+                end
+            else
+                for _, esp in pairs(DeathESPObjects) do
+                    esp:SetVisible(false)
+                end
+            end
+            
+            -- Cleanup removed backpacks
+            for obj, esp in pairs(DeathESPObjects) do
+                if not obj or not obj.Parent or (not SilentAimSettings.DeathESPEnabled) then
+                    esp:SetVisible(false)
+                    if not obj or not obj.Parent then
+                        esp:Destroy()
+                        DeathESPObjects[obj] = nil
+                    end
+                end
+            end
+        else
+            for _, esp in pairs(ESPObjects) do
+                esp:SetVisible(false)
+            end
+            for _, esp in pairs(DeathESPObjects) do
+                esp:SetVisible(false)
+            end
+        end
+        
+        if SilentAimSettings.FlyJumpEnabled and flyActive then
+            local character = LocalPlayer.Character
+            local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+            local hrp = character and character:FindFirstChild("HumanoidRootPart")
+
+            if humanoid and hrp and humanoid.Health > 0 then
+                local elapsedTime = tick() - flyJumpStart
+                local isHoldingJump = (tick() - lastJumpRequest) < 0.2
+                
+                if isHoldingJump and elapsedTime < 0.5 then
+                    hrp.AssemblyLinearVelocity = Vector3.new(hrp.AssemblyLinearVelocity.X, 22, hrp.AssemblyLinearVelocity.Z)
+                end
+                
+                if (isHoldingJump or elapsedTime < 0.1) and elapsedTime < 0.5 then
+                    FlyJumpContainer.Visible = true
+                    local progress = math.clamp(elapsedTime / 0.5, 0, 1)
+                    FlyJumpBar.Size = UDim2.new(progress, 0, 1, 0)
+                    
+                    local r = progress < 0.5 and 255 or math.floor(255 - (progress - 0.5) * 2 * 255)
+                    local g = progress < 0.5 and math.floor(progress * 2 * 255) or 255
+                    FlyJumpBar.BackgroundColor3 = Color3.fromRGB(r, g, 0)
+                    
+                    FlyJumpText.Text = string.format("%.1fS", elapsedTime)
+                elseif isHoldingJump and elapsedTime >= 0.5 then
+                    local params = RaycastParams.new()
+                    params.FilterType = Enum.RaycastFilterType.Exclude
+                    params.FilterDescendantsInstances = {character}
+                    
+                    local result = workspace:Raycast(hrp.Position, Vector3.new(0, -9000, 0), params)
+                    if result then
+                        local hipHeight = humanoid.HipHeight > 0 and humanoid.HipHeight or 2
+                        hrp.CFrame = CFrame.new(result.Position + Vector3.new(0, hipHeight + (hrp.Size.Y/2), 0))
+                        hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                    end
+                    
+                    flyActive = false
+                    FlyJumpContainer.Visible = false
+                else
+                    if humanoid.FloorMaterial ~= Enum.Material.Air then
+                        flyActive = false
+                    end
+                    FlyJumpContainer.Visible = false
+                end
+            else
+                flyActive = false
+                FlyJumpContainer.Visible = false
+            end
+        else
+            FlyJumpContainer.Visible = false
+        end
+    end)
+end))
+
+local function isHempPrompt(prompt)
+    local pName = string.lower(prompt.Name)
+    local objText = string.lower(prompt.ObjectText or "")
+    local actText = string.lower(prompt.ActionText or "")
+    local parentName = prompt.Parent and string.lower(prompt.Parent.Name) or ""
+    
+    if string.find(pName, "hemp") or string.find(objText, "hemp") or string.find(actText, "hemp") or string.find(parentName, "hemp") then
+        return true
+    end
+    return false
+end
+
+local promptsCache = {}
+
+for _, obj in pairs(workspace:GetDescendants()) do
+    if obj:IsA("ProximityPrompt") then
+        table.insert(promptsCache, obj)
+    end
+end
+
+workspace.DescendantAdded:Connect(function(obj)
+    if obj:IsA("ProximityPrompt") then
+        table.insert(promptsCache, obj)
+    end
+end)
+
+workspace.DescendantRemoving:Connect(function(obj)
+    if obj:IsA("ProximityPrompt") then
+        for i, p in ipairs(promptsCache) do
+            if p == obj then
+                table.remove(promptsCache, i)
+                break
+            end
+        end
+    end
+end)
+
+task.spawn(function()
+    while task.wait(0.1) do
+        if SilentAimSettings.AutoHempEnabled and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+            local pivot = LocalPlayer.Character.HumanoidRootPart.Position
+            
+            for _, prompt in ipairs(promptsCache) do
+                if prompt and prompt.Parent and prompt.Parent:IsA("BasePart") then
+                    local dist = (pivot - prompt.Parent.Position).Magnitude
+                    if dist <= (prompt.MaxActivationDistance + 2) then
+                        if isHempPrompt(prompt) then
+                            if fireproximityprompt then
+                                fireproximityprompt(prompt)
+                            else
+                                prompt:InputHoldBegin()
+                                task.wait(prompt.HoldDuration + 0.05)
+                                prompt:InputHoldEnd()
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+end)
+
+local oldNamecall
+oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(...)
+    local Method = getnamecallmethod()
+    local Arguments = {...}
+    local self = Arguments[1]
+    local chance = CalculateChance(SilentAimSettings.HitChance)
+    if SilentAimSettings.Enabled and self == workspace and not checkcaller() and chance == true then
+        
+        local function isBulletRaycast(method, args)
+            if method == "Raycast" then
+                return args[3] and args[3].Magnitude > 15
+            elseif method:lower():find("findpartonray") then
+                local r = args[2]
+                return r and r.Direction and r.Direction.Magnitude > 15
+            end
+            return false
+        end
+
+        -- Check if Method matches and it is a long enough raycast (to avoid hijacking short barrel bounds raycasts causing guns to break)
+        if Method:lower() == SilentAimSettings.SilentAimMethod:lower() and isBulletRaycast(Method, Arguments) then
+            local HitPart = getClosestPlayer()
+            if HitPart then
+                local origin
+                
+                if Method == "FindPartOnRayWithIgnoreList" then
+                    if ValidateArguments(Arguments, ExpectedArguments.FindPartOnRayWithIgnoreList) then
+                        origin = Arguments[2].Origin
+                        Arguments[2] = Ray.new(origin, getDirection(origin, HitPart.Position))
+                    end
+                elseif Method == "FindPartOnRayWithWhitelist" then
+                    if ValidateArguments(Arguments, ExpectedArguments.FindPartOnRayWithWhitelist) then
+                        origin = Arguments[2].Origin
+                        Arguments[2] = Ray.new(origin, getDirection(origin, HitPart.Position))
+                    end
+                elseif (Method == "FindPartOnRay" or Method == "findPartOnRay") then
+                    if ValidateArguments(Arguments, ExpectedArguments.FindPartOnRay) then
+                        origin = Arguments[2].Origin
+                        Arguments[2] = Ray.new(origin, getDirection(origin, HitPart.Position))
+                    end
+                elseif Method == "Raycast" then
+                    if ValidateArguments(Arguments, ExpectedArguments.Raycast) then
+                        origin = Arguments[2]
+                        Arguments[3] = getDirection(origin, HitPart.Position)
+                    end
+                end
+
+                if origin then
+                    task.spawn(function()
+                        if SilentAimSettings.ShowBulletTracers then CreateTracer(origin, HitPart.Position) end
+                        getgenv().FOVSpeedBoost = 250 -- Tracer triggers speed boost!
+                        if SilentAimSettings.ShowHitNotifications then NotifyHit(HitPart.Parent and HitPart.Parent.Name or "Unknown") end
+                    end)
+                    return oldNamecall(unpack(Arguments))
+                end
+            end
+        end
+    end
+    return oldNamecall(...)
+end))
+
+local oldIndex = nil 
+oldIndex = hookmetamethod(game, "__index", newcclosure(function(self, Index)
+    if self == Mouse and not checkcaller() and SilentAimSettings.Enabled and SilentAimSettings.SilentAimMethod == "Mouse.Hit/Target" and getClosestPlayer() then
+        local HitPart = getClosestPlayer()
+         
+        if Index == "Target" or Index == "target" then 
+            return HitPart
+        elseif Index == "Hit" or Index == "hit" then 
+            return ((SilentAimSettings.MouseHitPrediction and (HitPart.CFrame + (HitPart.Velocity * SilentAimSettings.MouseHitPredictionAmount))) or (not SilentAimSettings.MouseHitPrediction and HitPart.CFrame))
+        elseif Index == "X" or Index == "x" then 
+            return self.X 
+        elseif Index == "Y" or Index == "y" then 
+            return self.Y 
+        elseif Index == "UnitRay" then 
+            return Ray.new(self.Origin, (self.Hit - self.Origin).Unit)
+        end
+    end
+
+    return oldIndex(self, Index)
+end))
+
+
+local UIMenuGroup = Tabs["UI Settings"]:AddLeftGroupbox("Menu")
+
+UIMenuGroup:AddToggle("KeybindMenuOpen", {
+    Default = Library.KeybindFrame.Visible,
+    Text = "Open Keybind Menu",
+    Callback = function(value)
+        Library.KeybindFrame.Visible = value
+    end,
+})
+UIMenuGroup:AddToggle("ShowCustomCursor", {
+    Text = "Custom Cursor",
+    Default = true,
+    Callback = function(Value)
+        Library.ShowCustomCursor = Value
+    end,
+})
+UIMenuGroup:AddDropdown("NotificationSide", {
+    Values = { "Left", "Right" },
+    Default = 2,
+    Text = "Notification Side",
+    Callback = function(Value)
+        Library:SetNotifySide(Value)
+    end,
+})
+UIMenuGroup:AddDropdown("DPIDropdown", {
+    Values = { "50%", "75%", "100%", "125%", "150%", "175%", "200%" },
+    Default = 3,
+    Text = "DPI Scale",
+    Callback = function(Value)
+        Value = Value:gsub("%%", "")
+        local DPI = tonumber(Value)
+        Library:SetDPIScale(DPI)
+    end,
+})
+UIMenuGroup:AddDivider()
+UIMenuGroup:AddLabel("Menu bind"):AddKeyPicker("MenuKeybind", { Default = "RightShift", NoUI = true, Text = "Menu keybind" })
+
+UIMenuGroup:AddButton("Unload", function()
+    Library:Unload()
+end)
+
+Library.ToggleKeybind = Options.MenuKeybind
+ThemeManager:SetLibrary(Library)
+SaveManager:SetLibrary(Library)
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreIndexes({ "MenuKeybind" })
+ThemeManager:SetFolder("MobileSilentAim")
+SaveManager:SetFolder("MobileSilentAim/config")
+SaveManager:BuildConfigSection(Tabs["UI Settings"])
+ThemeManager:ApplyToTab(Tabs["UI Settings"])
+SaveManager:LoadAutoloadConfig()
+
