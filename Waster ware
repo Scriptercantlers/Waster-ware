@@ -16,8 +16,8 @@ local Options = Library.Options
 local Toggles = Library.Toggles
 
 local Window = Library:CreateWindow({
-	Title = "Waster ware",
-	Footer = "by @Nexsue @ycleb",
+	Title = "Mobile Silent Aim",
+	Footer = "by you",
     Icon = 0,
 	NotifySide = "Right",
 	ShowCustomCursor = true,
@@ -54,6 +54,11 @@ local SilentAimSettings = {
     SkyboxEnabled = false,
     MorningTime = false,
     AutoHempEnabled = false,
+    
+    NoRecoil = false,
+    NoSpread = false,
+    PotatoGraphics = false,
+    NoGrass = false,
     
     CoordFinder = false,
     MarkerX = 800,
@@ -133,6 +138,137 @@ local function CreateTracer(Origin, EndPoint)
 end
 
 local lastHitNotify = 0
+
+-- [[ STAFF LIST LOGIC ]] --
+local StaffSettings = {
+    Enabled = false,
+    OnlyOnline = false,
+    Roles = {
+        ["Admin"] = true, ["Admin+"] = true, ["Cool coconut"] = true, 
+        ["Developer"] = true, ["Secret agent"] = true, ["Lead developer"] = true, ["Bob"] = true
+    }
+}
+local GroupId = 15631191
+local ListPos = Vector2.new(24, math.floor(Camera.ViewportSize.Y * 0.2))
+local IsDragging, DragOffset, Expanded = false, Vector2.new(0,0), false
+local UI, MemberDrawings = {}, {}
+
+local StaffColors = {
+    Border = Color3.fromRGB(120, 120, 120),
+    Background = Color3.fromRGB(24, 24, 24),
+    Header = Color3.fromRGB(34, 36, 39),
+    Text = Color3.fromRGB(130, 100, 255),
+    Online = Color3.fromRGB(45, 220, 70),
+    Offline = Color3.fromRGB(230, 60, 60)
+}
+
+local function UpdateStaffPositions()
+    if not UI.border then return end
+    local baseW, baseH, rowH = 292, 28, 18
+    UI.bg.Position = ListPos
+    UI.border.Position = ListPos
+    UI.header.Position = ListPos
+    UI.arrow.Position = ListPos + Vector2.new(baseW - 24, 5)
+    UI.title.Position = ListPos + Vector2.new(12, 4)
+    UI.colNameLbl.Position = ListPos + Vector2.new(10, baseH + 2)
+    UI.colRoleLbl.Position = ListPos + Vector2.new(120, baseH + 2)
+    UI.colStatusLbl.Position = ListPos + Vector2.new(210, baseH + 2)
+    for i, m in ipairs(MemberDrawings) do
+        local y = ListPos.Y + baseH + 2 + 14 + ((i-1)*rowH)
+        m.name.Position = Vector2.new(ListPos.X + 10, y)
+        m.role.Position = Vector2.new(ListPos.X + 120, y)
+        m.status.Position = Vector2.new(ListPos.X + 210, y)
+    end
+    local totalH = baseH + 2 + 14 + (#MemberDrawings * rowH) + 10
+    UI.bg.Size = Vector2.new(baseW, Expanded and totalH or baseH)
+    UI.border.Size = Vector2.new(baseW, Expanded and totalH or baseH)
+    UI.header.Size = Vector2.new(baseW, baseH)
+end
+
+local function UpdateStaffVisibility()
+    if not UI.border then return end
+    local v = StaffSettings.Enabled
+    UI.bg.Visible, UI.border.Visible, UI.header.Visible, UI.arrow.Visible, UI.title.Visible = v, v, v, v, v
+    UI.arrow.Text = Expanded and "v" or ">"
+    local show = v and Expanded
+    UI.colNameLbl.Visible, UI.colRoleLbl.Visible, UI.colStatusLbl.Visible = show, show, show
+    for _, m in ipairs(MemberDrawings) do
+        m.name.Visible, m.role.Visible, m.status.Visible = show, show, show
+    end
+end
+
+local function RefreshStaffList(staff)
+    for _, m in ipairs(MemberDrawings) do pcall(function() m.name:Remove() m.role:Remove() m.status:Remove() end) end
+    MemberDrawings = {}
+    local show = StaffSettings.Enabled and Expanded
+    for _, s in ipairs(staff) do
+        local n = Drawing.new("Text") n.Text = s.name; n.Size = 14; n.Color = StaffColors.Text; n.Visible = show
+        local r = Drawing.new("Text") r.Text = s.rank; r.Size = 14; r.Color = StaffColors.Text; r.Visible = show
+        local st = Drawing.new("Text") st.Text = s.online and "Online" or "Offline"; st.Size = 14; st.Color = s.online and StaffColors.Online or StaffColors.Offline; st.Visible = show
+        table.insert(MemberDrawings, {name = n, role = r, status = st})
+    end
+    UpdateStaffPositions()
+end
+
+local function FetchStaff()
+    local staff = {}
+    local success, rRaw = pcall(function() return game:HttpGet("https://groups.roblox.com/v1/groups/"..GroupId.."/roles") end)
+    if not success then return staff end
+    local roles = HttpService:JSONDecode(rRaw).roles
+    for _, role in ipairs(roles) do
+        if StaffSettings.Roles[role.name] then
+            local success2, uRaw = pcall(function() return game:HttpGet("https://groups.roblox.com/v1/groups/"..GroupId.."/roles/"..role.id.."/users?limit=100") end)
+            if success2 then
+                for _, user in ipairs(HttpService:JSONDecode(uRaw).data) do
+                    table.insert(staff, {name = user.username, rank = role.name, userId = user.userId, online = Players:FindFirstChild(user.username) ~= nil})
+                end
+            end
+        end
+    end
+    if StaffSettings.OnlyOnline then
+        local filtered = {}
+        for _, s in ipairs(staff) do if s.online then table.insert(filtered, s) end end
+        staff = filtered
+    end
+    return staff
+end
+
+local function InitStaffUI()
+    UI.border = Drawing.new("Square"); UI.border.Thickness = 2; UI.border.Filled = false; UI.border.Color = StaffColors.Border
+    UI.bg = Drawing.new("Square"); UI.bg.Filled = true; UI.bg.Color = StaffColors.Background; UI.bg.Transparency = 0.9
+    UI.header = Drawing.new("Square"); UI.header.Filled = true; UI.header.Color = StaffColors.Header
+    UI.arrow = Drawing.new("Text"); UI.arrow.Size = 16; UI.arrow.Color = StaffColors.Text; UI.arrow.Outline = true
+    UI.title = Drawing.new("Text"); UI.title.Text = "Staff List"; UI.title.Size = 16; UI.title.Color = StaffColors.Text; UI.title.Outline = true
+    UI.colNameLbl = Drawing.new("Text"); UI.colNameLbl.Text = "Name"; UI.colNameLbl.Size = 14; UI.colNameLbl.Color = StaffColors.Text
+    UI.colRoleLbl = Drawing.new("Text"); UI.colRoleLbl.Text = "Role"; UI.colRoleLbl.Size = 14; UI.colRoleLbl.Color = StaffColors.Text
+    UI.colStatusLbl = Drawing.new("Text"); UI.colStatusLbl.Text = "Status"; UI.colStatusLbl.Size = 14; UI.colStatusLbl.Color = StaffColors.Text
+    UpdateStaffVisibility()
+    UpdateStaffPositions()
+end
+
+UserInputService.InputBegan:Connect(function(input)
+    if not StaffSettings.Enabled or not UI.border then return end
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        local mPos = UserInputService:GetMouseLocation()
+        if mPos.X >= (ListPos.X + 256) and mPos.X <= (ListPos.X + 292) and mPos.Y >= ListPos.Y + 36 and mPos.Y <= (ListPos.Y + 64) then
+            Expanded = not Expanded; UpdateStaffVisibility(); UpdateStaffPositions(); return
+        end
+        if mPos.X >= ListPos.X and mPos.X <= (ListPos.X + 256) and mPos.Y >= ListPos.Y + 36 and mPos.Y <= (ListPos.Y + 64) then
+            IsDragging = true; DragOffset = mPos - ListPos
+        end
+    end
+end)
+UserInputService.InputEnded:Connect(function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 then IsDragging = false end end)
+RunService.RenderStepped:Connect(function() if StaffSettings.Enabled and IsDragging then ListPos = UserInputService:GetMouseLocation() - DragOffset; UpdateStaffPositions() end end)
+
+task.spawn(function()
+    InitStaffUI()
+    while true do
+        if StaffSettings.Enabled then RefreshStaffList(FetchStaff()) end
+        task.wait(10)
+    end
+end)
+
 local function NotifyHit(targetName)
     if tick() - lastHitNotify > 1 then
         lastHitNotify = tick()
@@ -428,6 +564,24 @@ local VisualsGroupBox1 = Tabs.Visuals:AddLeftGroupbox("Player Visuals")
 local VisualsGroupBox2 = Tabs.Visuals:AddRightGroupbox("World & FOV")
 local MovementGroupBox = Tabs.Movement:AddLeftGroupbox("Movement")
 local MiscGroupBox = Tabs.Misc:AddLeftGroupbox("Miscellaneous")
+local StaffGroupBox = Tabs.Misc:AddRightGroupbox("Staff List")
+
+StaffGroupBox:AddToggle("StaffListToggle", {
+    Text = "Staff List Enabled",
+    Default = StaffSettings.Enabled,
+    Callback = function(Value)
+        StaffSettings.Enabled = Value
+        UpdateStaffVisibility()
+    end,
+})
+
+StaffGroupBox:AddToggle("StaffOnlyOnlineToggle", {
+    Text = "Only Online Staff",
+    Default = StaffSettings.OnlyOnline,
+    Callback = function(Value)
+        StaffSettings.OnlyOnline = Value
+    end,
+})
 
 CombatGroupBox:AddToggle("AntiAimToggle", {
     Text = "Enable Anti-Aim (Fast Spin)",
@@ -464,6 +618,22 @@ CombatGroupBox:AddSlider("HitboxSizeSlider", {
     Suffix = " Studs",
     Callback = function(Value)
         SilentAimSettings.HitboxSize = Value
+    end,
+})
+
+CombatGroupBox:AddToggle("NoRecoilToggle", {
+    Text = "No Recoil",
+    Default = SilentAimSettings.NoRecoil,
+    Callback = function(Value)
+        SilentAimSettings.NoRecoil = Value
+    end,
+})
+
+CombatGroupBox:AddToggle("NoSpreadToggle", {
+    Text = "No Spread",
+    Default = SilentAimSettings.NoSpread,
+    Callback = function(Value)
+        SilentAimSettings.NoSpread = Value
     end,
 })
 
@@ -634,8 +804,39 @@ VisualsGroupBox2:AddToggle("MorningTimeToggle", {
     end,
 })
 
-VisualsGroupBox2:AddToggle("DeathESPEnabledToggle", {
-    Text = "Enable Dead Body ESP",
+VisualsGroupBox2:AddToggle("NoGrassToggle", {
+    Text = "No Grass",
+    Default = SilentAimSettings.NoGrass,
+    Callback = function(Value)
+        SilentAimSettings.NoGrass = Value
+        if Value then
+            local terrain = workspace:FindFirstChildOfClass("Terrain")
+            if terrain then
+                pcall(function() sethiddenproperty(terrain, "Decoration", false) end)
+            end
+        end
+    end,
+})
+
+VisualsGroupBox2:AddToggle("PotatoGraphicsToggle", {
+    Text = "Potato Graphics",
+    Default = SilentAimSettings.PotatoGraphics,
+    Callback = function(Value)
+        SilentAimSettings.PotatoGraphics = Value
+        if Value then
+            for _, v in pairs(workspace:GetDescendants()) do
+                if v:IsA("BasePart") and not v:IsA("MeshPart") then
+                    v.Material = Enum.Material.SmoothPlastic
+                elseif v:IsA("Texture") or v:IsA("Decal") then
+                    v:Destroy()
+                end
+            end
+        end
+    end,
+})
+
+VisualsGroupBox2:AddToggle("BackpackESPEnabledToggle", {
+    Text = "Enable Backpack ESP",
     Default = SilentAimSettings.DeathESPEnabled,
     Callback = function(Value)
         SilentAimSettings.DeathESPEnabled = Value
@@ -1157,7 +1358,7 @@ local function createDeathESP()
     Name.Color = Color3.fromRGB(255, 255, 255)
     Name.Outline = true
     Name.ZIndex = 2
-    Name.Text = "Dead body"
+    Name.Text = "Backpack"
     
     local DistText = Drawing.new("Text")
     DistText.Size = 12
@@ -1208,6 +1409,31 @@ end)
 
 local fovRotation = 0
 getgenv().FOVSpeedBoost = 0
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+task.spawn(function()
+    while task.wait(1) do
+        pcall(function()
+            -- No Recoil
+            local Recoil = require(ReplicatedStorage:WaitForChild("Gun"):WaitForChild("Scripts"):WaitForChild("RecoilHandler"))
+            if Recoil and SilentAimSettings.NoRecoil then
+                Recoil.nextStep = function() end
+                Recoil.setRecoilMultiplier = function() end
+            end
+            
+            -- No Spread
+            local Utils = require(ReplicatedStorage:WaitForChild("Utils"))
+            if Utils and SilentAimSettings.NoSpread then
+                Utils.applySpreadToDirection = function(dir) return dir end
+            end
+            
+            local GunClient = require(ReplicatedStorage.Gun.Scripts.GunClient)
+            if GunClient and SilentAimSettings.NoSpread then
+                GunClient.updateSpreadMult = function() return 0 end
+            end
+        end)
+    end
+end)
 
 resume(create(function()
     RenderStepped:Connect(function(dt)
@@ -1397,7 +1623,8 @@ resume(create(function()
                 local character = player.Character
                 local humanoid = character and character:FindFirstChildOfClass("Humanoid")
                 
-                if character and humanoid and humanoid.Health > 0 and player ~= LocalPlayer then
+                local isAlive = humanoid and humanoid.Health > 0
+                if character and humanoid and isAlive and player ~= LocalPlayer then
                     local onScreen, pos, size, dist = getSimpleESPBox(character, Camera)
                     
                     if onScreen and pos and size and dist then
@@ -1405,19 +1632,20 @@ resume(create(function()
                         
                         esp.Box.Position = pos
                         esp.Box.Size = size
+                        esp.Box.Color = Color3.fromRGB(0, 255, 0)
                         
                         esp.Name.Text = tostring(player.Name) .. " [" .. tostring(math.floor(dist)) .. "]"
-                        esp.Name.Position = Vector2.new(pos.X + size.X/2, pos.Y - 18)
+                        esp.Name.Color = Color3.fromRGB(255, 255, 255)
                         
                         esp.HealthText.Text = "HP: " .. tostring(math.floor(humanoid.Health))
-                        esp.HealthText.Position = Vector2.new(pos.X + size.X/2, pos.Y + size.Y + 2)
-                        
-                        local maxHp = humanoid.MaxHealth
-                        if not maxHp or maxHp <= 0 then maxHp = 100 end
-                        local hpPct = math.clamp(humanoid.Health / maxHp, 0, 1)
+                        local maxHp = humanoid.MaxHealth or 100
+                        local hpPct = math.clamp(humanoid.Health / (maxHp > 0 and maxHp or 100), 0, 1)
                         local r = hpPct < 0.5 and 255 or math.floor(255 - (hpPct - 0.5) * 2 * 255)
                         local g = hpPct < 0.5 and math.floor(hpPct * 2 * 255) or 255
                         esp.HealthText.Color = Color3.fromRGB(r, g, 0)
+                        
+                        esp.Name.Position = Vector2.new(pos.X + size.X/2, pos.Y - 18)
+                        esp.HealthText.Position = Vector2.new(pos.X + size.X/2, pos.Y + size.Y + 2)
                     else
                         esp:SetVisible(false)
                     end
@@ -1436,16 +1664,26 @@ resume(create(function()
                 local character = player.Character
                 local humanoid = character and character:FindFirstChildOfClass("Humanoid")
                 
-                if character and humanoid and humanoid.Health > 0 and player ~= LocalPlayer then
+                local isAlive = humanoid and humanoid.Health > 0
+                if character and humanoid and isAlive and player ~= LocalPlayer then
                     local onScreen, pos, size, dist = getESPBox(character, Camera)
                     
                     if onScreen then
-                        esp.Box.Visible = true
-                        esp.Name.Visible = true
-                        esp.HealthBarBg.Visible = true
-                        esp.HealthBarFill.Visible = true
-                        esp.HealthText.Visible = true
-                        esp.EquippedText.Visible = true
+                        esp:SetVisible(true)
+                        
+                        esp.Box.Color = Color3.fromRGB(220, 220, 220)
+                        esp.Name.Color = Color3.fromRGB(220, 220, 220)
+                        
+                        local hpPct = math.clamp(humanoid.Health / humanoid.MaxHealth, 0, 1)
+                        esp.HealthBarFill.Size = Vector2.new(size.X * hpPct, 4)
+                        local r = hpPct < 0.5 and 255 or math.floor(255 - (hpPct - 0.5) * 2 * 255)
+                        local g = hpPct < 0.5 and math.floor(hpPct * 2 * 255) or 255
+                        esp.HealthBarFill.Color = Color3.fromRGB(r, g, 0)
+                        
+                        esp.HealthText.Text = math.floor(humanoid.Health) .. " / " .. math.floor(humanoid.MaxHealth)
+                        
+                        local tool = character:FindFirstChildOfClass("Tool")
+                        esp.EquippedText.Text = tool and tool.Name or "None"
                         
                         for _, part in pairs(character:GetDescendants()) do
                             if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
@@ -1484,22 +1722,11 @@ resume(create(function()
                         esp.Name.Text = player.DisplayName .. " [" .. math.floor(dist) .. "m]"
                         esp.Name.Position = Vector2.new(pos.X + size.X/2, pos.Y - 18)
                         
-                        local hpPct = math.clamp(humanoid.Health / humanoid.MaxHealth, 0, 1)
                         esp.HealthBarBg.Position = Vector2.new(pos.X, pos.Y + size.Y + 2)
                         esp.HealthBarBg.Size = Vector2.new(size.X, 4)
-                        
                         esp.HealthBarFill.Position = esp.HealthBarBg.Position
-                        esp.HealthBarFill.Size = Vector2.new(size.X * hpPct, 4)
                         
-                        local r = hpPct < 0.5 and 255 or math.floor(255 - (hpPct - 0.5) * 2 * 255)
-                        local g = hpPct < 0.5 and math.floor(hpPct * 2 * 255) or 255
-                        esp.HealthBarFill.Color = Color3.fromRGB(r, g, 0)
-                        
-                        esp.HealthText.Text = math.floor(humanoid.Health) .. " / " .. math.floor(humanoid.MaxHealth)
                         esp.HealthText.Position = Vector2.new(pos.X + size.X/2, pos.Y + size.Y + 6)
-                        
-                        local tool = character:FindFirstChildOfClass("Tool")
-                        esp.EquippedText.Text = tool and tool.Name or "None"
                         esp.EquippedText.Position = Vector2.new(pos.X + size.X/2, pos.Y + size.Y + 20)
                     else
                         esp:SetVisible(false)
@@ -1508,66 +1735,61 @@ resume(create(function()
                     esp:SetVisible(false)
                 end
             end
-            
-            -- Death Backpacks ESP
-            if SilentAimSettings.DeathESPEnabled then
-                local deathFolder = workspace:FindFirstChild("DeathBackpacks")
-                if deathFolder then
-                    for _, obj in pairs(deathFolder:GetChildren()) do
-                        if not DeathESPObjects[obj] then
-                            DeathESPObjects[obj] = createDeathESP()
-                        end
+        else
+            for _, esp in pairs(ESPObjects) do
+                esp:SetVisible(false)
+            end
+        end
+
+        -- Death Backpacks ESP (Independent of ESP type)
+        if SilentAimSettings.DeathESPEnabled then
+            local deathFolder = workspace:FindFirstChild("DeathBackpacks")
+            if deathFolder then
+                for _, obj in pairs(deathFolder:GetChildren()) do
+                    if not DeathESPObjects[obj] then
+                        DeathESPObjects[obj] = createDeathESP()
+                    end
+                    
+                    local esp = DeathESPObjects[obj]
+                    local primary = obj:IsA("Model") and (obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")) or (obj:IsA("BasePart") and obj)
+                    
+                    if primary then
+                        local screenPos, onScreen = Camera:WorldToViewportPoint(primary.Position)
+                        local dist = (Camera.CFrame.Position - primary.Position).Magnitude
                         
-                        local esp = DeathESPObjects[obj]
-                        local primary = obj:IsA("Model") and (obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")) or (obj:IsA("BasePart") and obj)
-                        
-                        if primary then
-                            local screenPos, onScreen = Camera:WorldToViewportPoint(primary.Position)
-                            local dist = (Camera.CFrame.Position - primary.Position).Magnitude
+                        if onScreen and dist <= 100 then
+                            local playerBoxHeight = (Camera:WorldToViewportPoint(primary.Position + Vector3.new(0, 3, 0)).Y - Camera:WorldToViewportPoint(primary.Position - Vector3.new(0, 3, 0)).Y)
+                            local height = math.abs(playerBoxHeight) * 0.25 -- 1/4 size
+                            local width = height * 1.2
                             
-                            if onScreen and dist <= 100 then
-                                local playerBoxHeight = (Camera:WorldToViewportPoint(primary.Position + Vector3.new(0, 3, 0)).Y - Camera:WorldToViewportPoint(primary.Position - Vector3.new(0, 3, 0)).Y)
-                                local height = math.abs(playerBoxHeight) * 0.25 -- 1/4 size
-                                local width = height * 1.2
-                                
-                                esp.Box.Visible = true
-                                esp.Name.Visible = true
-                                esp.DistText.Visible = true
-                                
-                                esp.Box.Position = Vector2.new(screenPos.X - width/2, screenPos.Y - height/2)
-                                esp.Box.Size = Vector2.new(width, height)
-                                
-                                esp.Name.Position = Vector2.new(screenPos.X, screenPos.Y - height/2 - 14)
-                                esp.DistText.Position = Vector2.new(screenPos.X, screenPos.Y + height/2 + 2)
-                                esp.DistText.Text = "[" .. math.floor(dist) .. "m]"
-                            else
-                                esp:SetVisible(false)
-                            end
+                            esp.Box.Visible = true
+                            esp.Name.Visible = true
+                            esp.DistText.Visible = true
+                            
+                            esp.Box.Position = Vector2.new(screenPos.X - width/2, screenPos.Y - height/2)
+                            esp.Box.Size = Vector2.new(width, height)
+                            
+                            esp.Name.Position = Vector2.new(screenPos.X, screenPos.Y - height/2 - 14)
+                            esp.DistText.Position = Vector2.new(screenPos.X, screenPos.Y + height/2 + 2)
+                            esp.DistText.Text = "[" .. math.floor(dist) .. "m]"
                         else
                             esp:SetVisible(false)
                         end
+                    else
+                        esp:SetVisible(false)
                     end
-                end
-            else
-                for _, esp in pairs(DeathESPObjects) do
-                    esp:SetVisible(false)
                 end
             end
             
             -- Cleanup removed backpacks
             for obj, esp in pairs(DeathESPObjects) do
-                if not obj or not obj.Parent or (not SilentAimSettings.DeathESPEnabled) then
+                if not obj or not obj.Parent then
                     esp:SetVisible(false)
-                    if not obj or not obj.Parent then
-                        esp:Destroy()
-                        DeathESPObjects[obj] = nil
-                    end
+                    esp:Destroy()
+                    DeathESPObjects[obj] = nil
                 end
             end
         else
-            for _, esp in pairs(ESPObjects) do
-                esp:SetVisible(false)
-            end
             for _, esp in pairs(DeathESPObjects) do
                 esp:SetVisible(false)
             end
