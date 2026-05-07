@@ -79,7 +79,13 @@ local SilentAimSettings = {
     
     MouseHitPrediction = false,
     MouseHitPredictionAmount = 0.165,
-    HitChance = 100
+    HitChance = 100,
+    
+    InventoryEspEnabled = true,
+    BackpackViewEnabled = true,
+    BackpackDraggable = true,
+    BackpackTargetMode = "FOV Target", -- "FOV Target" or "Closest Player"
+    InventoryFovRadius = 150
 }
 
 getgenv().SilentAimSettings = SilentAimSettings
@@ -261,13 +267,7 @@ end)
 UserInputService.InputEnded:Connect(function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 then IsDragging = false end end)
 RunService.RenderStepped:Connect(function() if StaffSettings.Enabled and IsDragging then ListPos = UserInputService:GetMouseLocation() - DragOffset; UpdateStaffPositions() end end)
 
-task.spawn(function()
-    InitStaffUI()
-    while true do
-        if StaffSettings.Enabled then RefreshStaffList(FetchStaff()) end
-        task.wait(10)
-    end
-end)
+-- Moved loops to end
 
 local function NotifyHit(targetName)
     if tick() - lastHitNotify > 1 then
@@ -432,6 +432,104 @@ local coord_text = (function()
     return text
 end)()
 
+local inv_fov_circle = Drawing.new("Circle")
+inv_fov_circle.Thickness = 1
+inv_fov_circle.NumSides = 64
+inv_fov_circle.Color = Color3.fromRGB(255, 255, 255)
+inv_fov_circle.Filled = false
+inv_fov_circle.Visible = false
+
+local InventoryEspObjects = {}
+local function createInventoryESP(player)
+    local esp = {
+        ItemLabel = Instance.new("TextLabel"),
+        ItemIcon = Instance.new("ImageLabel")
+    }
+    
+    local gui = CreateOverlayGUI("InventoryEsp_" .. player.Name)
+    
+    esp.ItemLabel.BackgroundTransparency = 1
+    esp.ItemLabel.TextColor3 = Color3.fromRGB(255, 215, 0)
+    esp.ItemLabel.TextStrokeTransparency = 0.5
+    esp.ItemLabel.Font = Enum.Font.Code
+    esp.ItemLabel.TextSize = 14
+    esp.ItemLabel.Parent = gui
+    
+    esp.ItemIcon.BackgroundTransparency = 1
+    esp.ItemIcon.ScaleType = Enum.ScaleType.Fit
+    esp.ItemIcon.Parent = gui
+    
+    InventoryEspObjects[player] = esp
+end
+
+-- Backpack UI
+local backpack_gui = CreateOverlayGUI("BackpackViewer")
+local backpack_frame = Instance.new("Frame", backpack_gui)
+backpack_frame.AnchorPoint = Vector2.new(1, 0.5)
+backpack_frame.Size = UDim2.new(0, 240, 0, 300)
+backpack_frame.Position = UDim2.new(1, -20, 0.5, 0)
+backpack_frame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+backpack_frame.BorderSizePixel = 0
+backpack_frame.Visible = false
+
+local backpack_title = Instance.new("TextLabel", backpack_frame)
+backpack_title.Size = UDim2.new(1, 0, 0, 25)
+backpack_title.BackgroundColor3 = Color3.fromRGB(255, 105, 180)
+backpack_title.TextColor3 = Color3.fromRGB(255, 255, 255)
+backpack_title.Text = " Inventory"
+backpack_title.Font = Enum.Font.Code
+backpack_title.TextSize = 14
+backpack_title.Active = true
+
+local backpack_list = Instance.new("ScrollingFrame", backpack_frame)
+backpack_list.Size = UDim2.new(1, 0, 1, -25)
+backpack_list.Position = UDim2.new(0, 0, 0, 25)
+backpack_list.BackgroundTransparency = 1
+backpack_list.ScrollBarThickness = 4
+backpack_list.CanvasSize = UDim2.new(0, 0, 0, 0)
+
+local backpack_layout = Instance.new("UIGridLayout", backpack_list)
+backpack_layout.CellSize = UDim2.new(0, 45, 0, 45)
+backpack_layout.CellPadding = UDim2.new(0, 5, 0, 5)
+
+-- Dragging logic
+do
+    local dragging, dragStart, startPos
+
+    local function update(input)
+        local delta = input.Position - dragStart
+        backpack_frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    end
+
+    backpack_title.InputBegan:Connect(function(input)
+        if SilentAimSettings.BackpackDraggable and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
+            dragging = true
+            dragStart = input.Position
+            startPos = backpack_frame.Position
+
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end)
+        end
+    end)
+
+    backpack_title.InputChanged:Connect(function(input)
+        if SilentAimSettings.BackpackDraggable and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            if dragging then
+                update(input)
+            end
+        end
+    end)
+    
+    UserInputService.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            update(input)
+        end
+    end)
+end
+
 local ExpectedArguments = {
     FindPartOnRayWithIgnoreList = {
         ArgCountRequired = 3,
@@ -549,6 +647,43 @@ local function getClosestPlayer()
     return Closest
 end
 
+local function GetBestInventoryTarget()
+    local best, dist = nil, SilentAimSettings.InventoryFovRadius
+    local cam = workspace.CurrentCamera
+    local screenCenter = Vector2.new(cam.ViewportSize.X/2, cam.ViewportSize.Y/2)
+    
+    if SilentAimSettings.BackpackTargetMode == "Closest Player" then
+        dist = math.huge
+        local lpRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+        if not lpRoot then return nil end
+        for _, p in pairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer and p.Character then
+                local root = p.Character:FindFirstChild("HumanoidRootPart")
+                local hum = p.Character:FindFirstChild("Humanoid")
+                if root and hum and hum.Health > 0 then
+                    local d = (root.Position - lpRoot.Position).Magnitude
+                    if d < dist then dist = d; best = p end
+                end
+            end
+        end
+    else
+        for _, p in pairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer and p.Character then
+                local root = p.Character:FindFirstChild("HumanoidRootPart")
+                local hum = p.Character:FindFirstChild("Humanoid")
+                if root and hum and hum.Health > 0 then
+                    local pos, onS = cam:WorldToViewportPoint(root.Position)
+                    if onS then
+                        local d = (Vector2.new(pos.X, pos.Y) - screenCenter).Magnitude
+                        if d < dist then dist = d; best = p end
+                    end
+                end
+            end
+        end
+    end
+    return best
+end
+
 local Tabs = {
 	Main = Window:AddTab("Main", "crosshair"),
 	Combat = Window:AddTab("Combat", "swords"),
@@ -564,6 +699,54 @@ local VisualsGroupBox1 = Tabs.Visuals:AddLeftGroupbox("Player Visuals")
 local VisualsGroupBox2 = Tabs.Visuals:AddRightGroupbox("World & FOV")
 local MovementGroupBox = Tabs.Movement:AddLeftGroupbox("Movement")
 local MiscGroupBox = Tabs.Misc:AddLeftGroupbox("Miscellaneous")
+local InventoryGroupBox = Tabs.Misc:AddRightGroupbox("Inventory Viewer")
+
+InventoryGroupBox:AddToggle("InventoryEspToggle", {
+    Text = "Enable Item ESP (Icons)",
+    Default = SilentAimSettings.InventoryEspEnabled,
+    Callback = function(Value)
+        SilentAimSettings.InventoryEspEnabled = Value
+    end,
+})
+
+InventoryGroupBox:AddToggle("BackpackViewToggle", {
+    Text = "Enable Backpack Window",
+    Default = SilentAimSettings.BackpackViewEnabled,
+    Callback = function(Value)
+        SilentAimSettings.BackpackViewEnabled = Value
+    end,
+})
+
+InventoryGroupBox:AddToggle("BackpackDraggableToggle", {
+    Text = "Draggable Window",
+    Default = SilentAimSettings.BackpackDraggable,
+    Callback = function(Value)
+        SilentAimSettings.BackpackDraggable = Value
+    end,
+})
+
+InventoryGroupBox:AddDropdown("BackpackTargetModeDrop", {
+    Text = "Target Method",
+    Values = {"FOV Target", "Closest Player"},
+    Default = 1,
+    Multi = false,
+    Callback = function(Value)
+        SilentAimSettings.BackpackTargetMode = Value
+    end,
+})
+
+InventoryGroupBox:AddSlider("InventoryFovSlider", {
+    Text = "Selection FOV Radius",
+    Default = SilentAimSettings.InventoryFovRadius,
+    Min = 10,
+    Max = 1000,
+    Rounding = 0,
+    Suffix = "px",
+    Callback = function(Value)
+        SilentAimSettings.InventoryFovRadius = Value
+    end,
+})
+
 local StaffGroupBox = Tabs.Misc:AddRightGroupbox("Staff List")
 
 StaffGroupBox:AddToggle("StaffListToggle", {
@@ -1390,11 +1573,13 @@ for _, p in pairs(Players:GetPlayers()) do
     if p ~= LocalPlayer then
         ESPObjects[p] = createESP()
         SimpleESPObjects[p] = createSimpleESP()
+        createInventoryESP(p)
     end
 end
 Players.PlayerAdded:Connect(function(p)
     ESPObjects[p] = createESP()
     SimpleESPObjects[p] = createSimpleESP()
+    createInventoryESP(p)
 end)
 Players.PlayerRemoving:Connect(function(p)
     if ESPObjects[p] then
@@ -1404,6 +1589,11 @@ Players.PlayerRemoving:Connect(function(p)
     if SimpleESPObjects[p] then
         SimpleESPObjects[p]:Destroy()
         SimpleESPObjects[p] = nil
+    end
+    if InventoryEspObjects[p] then
+        if InventoryEspObjects[p].ItemLabel then InventoryEspObjects[p].ItemLabel:Destroy() end
+        if InventoryEspObjects[p].ItemIcon then InventoryEspObjects[p].ItemIcon:Destroy() end
+        InventoryEspObjects[p] = nil
     end
 end)
 
@@ -1617,6 +1807,49 @@ resume(create(function()
             Camera.FieldOfView = SilentAimSettings.CameraFOVAmount
         end
         
+    -- Inventory FOV Circle
+        inv_fov_circle.Visible = SilentAimSettings.BackpackTargetMode == "FOV Target" and SilentAimSettings.BackpackViewEnabled
+        inv_fov_circle.Position = Vector2.new(workspace.CurrentCamera.ViewportSize.X/2, workspace.CurrentCamera.ViewportSize.Y/2)
+        inv_fov_circle.Radius = SilentAimSettings.InventoryFovRadius
+        
+        -- Inventory ESP (Player Item ESP)
+        for p, esp in pairs(InventoryEspObjects) do
+            local char = p.Character
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            local root = char and char:FindFirstChild("HumanoidRootPart")
+            local alive = hum and hum.Health > 0
+            
+            if SilentAimSettings.InventoryEspEnabled and alive and root then
+                local pos, onS = workspace.CurrentCamera:WorldToViewportPoint(root.Position)
+                if onS then
+                    local tool = char:FindFirstChildOfClass("Tool")
+                    if tool then
+                        if tool.TextureId ~= "" then
+                            esp.ItemIcon.Image = tool.TextureId
+                            esp.ItemIcon.Size = UDim2.new(0, 30, 0, 30)
+                            esp.ItemIcon.Position = UDim2.new(0, pos.X - 15, 0, pos.Y + 20)
+                            esp.ItemIcon.Visible = true
+                            esp.ItemLabel.Visible = false
+                        else
+                            esp.ItemLabel.Text = tool.Name
+                            esp.ItemLabel.Position = UDim2.new(0, pos.X - 50, 0, pos.Y + 20)
+                            esp.ItemLabel.Size = UDim2.new(0, 100, 0, 20)
+                            esp.ItemLabel.Visible = true
+                            esp.ItemIcon.Visible = false
+                        end
+                    else
+                        esp.ItemLabel.Visible = false
+                        esp.ItemIcon.Visible = false
+                    end
+                else
+                    esp.ItemLabel.Visible = false
+                    esp.ItemIcon.Visible = false
+                end
+            else
+                esp.ItemLabel.Visible = false
+                esp.ItemIcon.Visible = false
+            end
+        end
         
         if SilentAimSettings.SimpleESPEnabled then
             for player, esp in pairs(SimpleESPObjects) do
@@ -1683,7 +1916,7 @@ resume(create(function()
                         esp.HealthText.Text = math.floor(humanoid.Health) .. " / " .. math.floor(humanoid.MaxHealth)
                         
                         local tool = character:FindFirstChildOfClass("Tool")
-                        esp.EquippedText.Text = tool and tool.Name or "None"
+                        -- esp.EquippedText.Text = tool and tool.Name or "None"
                         
                         for _, part in pairs(character:GetDescendants()) do
                             if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
@@ -2044,3 +2277,82 @@ SaveManager:BuildConfigSection(Tabs["UI Settings"])
 ThemeManager:ApplyToTab(Tabs["UI Settings"])
 SaveManager:LoadAutoloadConfig()
 
+task.spawn(function()
+    while task.wait(0.5) do
+        local visible = false
+        if SilentAimSettings.BackpackViewEnabled then
+            pcall(function()
+                local target = GetBestInventoryTarget()
+                if target then
+                    for _, c in ipairs(backpack_list:GetChildren()) do if c:IsA("ImageLabel") or c:IsA("Frame") then c:Destroy() end end
+                    
+                    local items = {}
+                    -- Equipped item
+                    if target.Character then
+                        for _, i in ipairs(target.Character:GetChildren()) do
+                            if i:IsA("Tool") then table.insert(items, {id = i.TextureId, name = i.Name, using = true}) end
+                        end
+                    end
+                    -- Backpack items
+                    local bp = target:FindFirstChild("Backpack")
+                    if bp then
+                        for _, i in ipairs(bp:GetChildren()) do
+                            if i:IsA("Tool") then table.insert(items, {id = i.TextureId, name = i.Name, using = false}) end
+                        end
+                    end
+                    
+                    if #items > 0 then
+                        visible = true
+                        backpack_title.Text = " [" .. target.Name:sub(1,12) .. "] Inventory"
+                        for _, item in ipairs(items) do
+                            local ic_container = Instance.new("Frame", backpack_list)
+                            ic_container.Size = UDim2.new(1, 0, 1, 0)
+                            ic_container.BackgroundTransparency = 1
+                            
+                            if item.id ~= "" then
+                                local ic = Instance.new("ImageLabel", ic_container)
+                                ic.Size = UDim2.new(1, 0, 1, 0)
+                                ic.BackgroundTransparency = 1
+                                ic.ScaleType = Enum.ScaleType.Fit
+                                ic.Image = item.id
+                            else
+                                local lbl = Instance.new("TextLabel", ic_container)
+                                lbl.Size = UDim2.new(1, 0, 1, 0)
+                                lbl.BackgroundTransparency = 1
+                                lbl.TextColor3 = Color3.fromRGB(200, 200, 200)
+                                lbl.Text = item.name:sub(1, 5)
+                                lbl.TextSize = 10
+                                lbl.TextWrapped = true
+                            end
+                            
+                            if item.using then
+                                local lbl = Instance.new("TextLabel", ic_container)
+                                lbl.Size = UDim2.new(1, 0, 0, 15)
+                                lbl.Position = UDim2.new(0, 0, 1, -15)
+                                lbl.BackgroundColor3 = Color3.fromRGB(0,0,0)
+                                lbl.BackgroundTransparency = 0.5
+                                lbl.TextColor3 = Color3.fromRGB(255, 50, 50)
+                                lbl.Text = "EQUIP"
+                                lbl.TextSize = 8
+                            end
+                        end
+                    end
+                end
+            end)
+        end
+        backpack_frame.Visible = visible
+        local num_items = 0
+        for _, c in ipairs(backpack_list:GetChildren()) do if c:IsA("Frame") then num_items = num_items + 1 end end
+        backpack_list.CanvasSize = UDim2.new(0, 0, 0, math.ceil(num_items / 4) * 50)
+    end
+end)
+
+task.spawn(function()
+    InitStaffUI()
+    while true do
+        pcall(function()
+            if StaffSettings.Enabled then RefreshStaffList(FetchStaff()) end
+        end)
+        task.wait(10)
+    end
+end)
