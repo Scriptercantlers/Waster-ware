@@ -3,6 +3,10 @@ if not game:IsLoaded() then
     game.Loaded:Wait()
 end
 
+if not newcclosure then getgenv().newcclosure = function(f) return f end end
+if not checkcaller then getgenv().checkcaller = function() return false end end
+if not hookmetamethod then getgenv().hookmetamethod = function() return function(...) end end end
+
 if not syn or not protectgui then
     getgenv().protectgui = function() end
 end
@@ -85,7 +89,10 @@ local SilentAimSettings = {
     BackpackViewEnabled = true,
     BackpackDraggable = true,
     BackpackTargetMode = "FOV Target", -- "FOV Target" or "Closest Player"
-    InventoryFovRadius = 150
+    InventoryFovRadius = 150,
+    KillNotifyEnabled = false,
+    DeleteSpikesEnabled = false,
+    DesyncEnabled = false
 }
 
 getgenv().SilentAimSettings = SilentAimSettings
@@ -115,6 +122,102 @@ local create = coroutine.create
 
 local ValidTargetParts = {"Head", "HumanoidRootPart"}
 local PredictionAmount = 0.165
+
+-- [[ ADDITIONAL FEATURES LOGIC ]] --
+local spikesConn = nil
+local desyncT = {loc = CFrame.new()}
+local prevLookVector = nil
+local isSpinning = false
+local spinThreshold = 15
+
+local function removeAllSpikes()
+    local count = 0
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj.Name == "Spikes" then 
+            pcall(function() obj:Destroy() end)
+            count = count + 1 
+        end
+    end
+    if count > 0 then 
+        Library:Notify({
+            Title = "Spikes Removed",
+            Description = "Удалено " .. tostring(count) .. " шипов",
+            Time = 3,
+        })
+    end
+end
+
+local function toggleDeleteSpikes(en)
+    SilentAimSettings.DeleteSpikesEnabled = en
+    if en then
+        removeAllSpikes()
+        if spikesConn then pcall(function() spikesConn:Disconnect() end) end
+        spikesConn = workspace.DescendantAdded:Connect(function(obj)
+            if SilentAimSettings.DeleteSpikesEnabled and obj.Name == "Spikes" then 
+                task.defer(function() pcall(function() obj:Destroy() end) end) 
+            end
+        end)
+    else
+        if spikesConn then pcall(function() spikesConn:Disconnect() end); spikesConn = nil end
+    end
+end
+
+local function onPlayerDied(player)
+    if SilentAimSettings.KillNotifyEnabled then
+        Library:Notify({
+            Title = "Notification",
+            Description = player.DisplayName .. " (" .. player.Name .. ") умер!",
+            Time = 3,
+        })
+    end
+end
+
+local function hookDeath(p)
+    if p == LocalPlayer then return end
+    local function hc(c) 
+        local h = c:WaitForChild("Humanoid", 15)
+        if h then h.Died:Connect(function() onPlayerDied(p) end) end 
+    end
+    if p.Character then task.spawn(hc, p.Character) end
+    p.CharacterAdded:Connect(hc)
+end
+
+local function getOffsetCFrame()
+    local ping = LocalPlayer:GetNetworkPing() * 1000
+    if ping < 100 then return CFrame.new(0, 0, -2)
+    elseif ping <= 170 then return CFrame.new(0, 0, -2.7)
+    else return CFrame.new(0, 0, -3.7) end
+end
+
+-- [[ Desync GUI Button ]] --
+local DesyncGui = Instance.new("ScreenGui")
+DesyncGui.Name = "DesyncGUI"
+DesyncGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+if getgenv().protectgui then getgenv().protectgui(DesyncGui) end
+DesyncGui.Parent = game:GetService("CoreGui")
+DesyncGui.Enabled = false
+
+local DesyncButton = Instance.new("TextButton")
+DesyncButton.Size = UDim2.new(0, 100, 0, 40)
+DesyncButton.Position = UDim2.new(0.5, -50, 0.5, -20)
+DesyncButton.BackgroundColor3 = Color3.fromRGB(30,30,30)
+DesyncButton.Text = "Desync: OFF"
+DesyncButton.TextColor3 = Color3.new(1,1,1)
+DesyncButton.Font = Enum.Font.SourceSansBold
+DesyncButton.TextSize = 18
+DesyncButton.Active = true
+DesyncButton.Draggable = true
+DesyncButton.Parent = DesyncGui
+
+Instance.new("UICorner", DesyncButton).CornerRadius = UDim.new(0, 8)
+local Stroke = Instance.new("UIStroke", DesyncButton)
+Stroke.Color = Color3.fromRGB(100, 100, 100)
+Stroke.Thickness = 2
+
+DesyncButton.MouseButton1Click:Connect(function()
+    SilentAimSettings.DesyncEnabled = not SilentAimSettings.DesyncEnabled
+    DesyncButton.Text = SilentAimSettings.DesyncEnabled and "Desync: ON" or "Desync: OFF"
+end)
 
 local function CreateTracer(Origin, EndPoint)
     if not Origin or not EndPoint then return end
@@ -1101,6 +1204,18 @@ MovementGroupBox:AddSlider("SpiderSpeedSlider", {
     end,
 })
 
+MovementGroupBox:AddToggle("DesyncToggle", {
+    Text = "Desync (Show Button)",
+    Default = SilentAimSettings.DesyncEnabled,
+    Callback = function(Value)
+        DesyncGui.Enabled = Value
+        if not Value then
+            SilentAimSettings.DesyncEnabled = false
+            DesyncButton.Text = "Desync: OFF"
+        end
+    end,
+})
+
 MiscGroupBox:AddToggle("FlyJumpToggle", {
     Text = "Enable Fly Jump",
     Default = SilentAimSettings.FlyJumpEnabled,
@@ -1165,6 +1280,22 @@ MiscGroupBox:AddToggle("AutoHempToggle", {
     Default = SilentAimSettings.AutoHempEnabled,
     Callback = function(Value)
         SilentAimSettings.AutoHempEnabled = Value
+    end,
+})
+
+MiscGroupBox:AddToggle("KillNotifyToggle", {
+    Text = "Kill Notification",
+    Default = SilentAimSettings.KillNotifyEnabled,
+    Callback = function(Value)
+        SilentAimSettings.KillNotifyEnabled = Value
+    end,
+})
+
+MiscGroupBox:AddToggle("DeleteSpikesToggle", {
+    Text = "Delete Spikes",
+    Default = SilentAimSettings.DeleteSpikesEnabled,
+    Callback = function(Value)
+        toggleDeleteSpikes(Value)
     end,
 })
 
@@ -1574,12 +1705,14 @@ for _, p in pairs(Players:GetPlayers()) do
         ESPObjects[p] = createESP()
         SimpleESPObjects[p] = createSimpleESP()
         createInventoryESP(p)
+        hookDeath(p)
     end
 end
 Players.PlayerAdded:Connect(function(p)
     ESPObjects[p] = createESP()
     SimpleESPObjects[p] = createSimpleESP()
     createInventoryESP(p)
+    hookDeath(p)
 end)
 Players.PlayerRemoving:Connect(function(p)
     if ESPObjects[p] then
@@ -2205,6 +2338,11 @@ end))
 
 local oldIndex = nil 
 oldIndex = hookmetamethod(game, "__index", newcclosure(function(self, Index)
+    if not checkcaller() and SilentAimSettings.DesyncEnabled and Index == "CFrame" and 
+       self == (LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")) and not isSpinning then
+        return desyncT.loc
+    end
+
     if self == Mouse and not checkcaller() and SilentAimSettings.Enabled and SilentAimSettings.SilentAimMethod == "Mouse.Hit/Target" and getClosestPlayer() then
         local HitPart = getClosestPlayer()
          
@@ -2355,4 +2493,24 @@ task.spawn(function()
         end)
         task.wait(10)
     end
+end)
+
+RunService.Heartbeat:Connect(function()
+    if not SilentAimSettings.DesyncEnabled or not LocalPlayer.Character then return end
+    local root = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+    
+    local currentLook = root.CFrame.LookVector
+    if prevLookVector then
+        local dot = math.clamp(prevLookVector:Dot(currentLook), -1, 1)
+        local angleDiff = math.deg(math.acos(dot))
+        isSpinning = angleDiff > spinThreshold
+    end
+    prevLookVector = currentLook
+    if isSpinning then return end 
+    
+    desyncT.loc = root.CFrame
+    root.CFrame = desyncT.loc * getOffsetCFrame()
+    RunService.RenderStepped:Wait()
+    root.CFrame = desyncT.loc
 end)
